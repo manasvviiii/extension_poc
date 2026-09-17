@@ -1,26 +1,24 @@
 {
   "manifest_version": 3,
-  "name": "Warm Graph Network POC",
-  "version": "0.2.0",
-  "description": "POC for extracting records from a demo connections page.",
-  "permissions": [
-    "storage"
-  ],
+  "name": "Warm Intro Network POC",
+  "version": "0.3.0",
+  "description": "POC for reading connection data rendered on LinkedIn pages.",
+  "permissions": [],
   "host_permissions": [
-    "http://127.0.0.1:8000/*"
+    "https://www.linkedin.com/*"
   ],
+  "action": {
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
       "matches": [
-        "http://127.0.0.1:8000/demo/connections"
+        "https://www.linkedin.com/*"
       ],
       "js": [
         "content.js"
       ],
       "run_at": "document_idle"
     }
-  ],
-  "action": {
-    "default_popup": "popup.html"
-  }
+  ]
 }

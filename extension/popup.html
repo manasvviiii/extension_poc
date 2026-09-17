@@ -1,48 +1,41 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <title>Warm Graph POC</title>
 
   <style>
     body {
+      width: 400px;
       font-family: Arial, sans-serif;
-      width: 320px;
       padding: 16px;
     }
 
     button {
-      width: 100%;
-      padding: 10px;
-      margin: 6px 0;
+      padding: 8px 12px;
       cursor: pointer;
     }
 
-    #status {
+    pre {
       white-space: pre-wrap;
-      font-size: 13px;
-      margin-top: 10px;
+      word-break: break-word;
+      max-height: 500px;
+      overflow: auto;
     }
   </style>
 </head>
 
 <body>
 
-  <h3>Warm Graph POC v0.2</h3>
+  <h3>LinkedIn Network POC</h3>
 
-  <p>
-    Open the demo connections page first.
-  </p>
-
-  <button id="read">
-    Read extracted network
+  <button id="extract">
+    Extract LinkedIn Data
   </button>
 
-  <button id="import">
-    Send to backend
-  </button>
-
-  <div id="status"></div>
+  <pre id="output">
+Open a LinkedIn page and click Extract.
+  </pre>
 
   <script src="popup.js"></script>
 

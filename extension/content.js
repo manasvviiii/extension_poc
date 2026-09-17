@@ -1,26 +1,69 @@
-function extractConnections() {
-  const cards = [...document.querySelectorAll(".connection")];
+console.log("[Warm Graph] LinkedIn extractor loaded");
 
-  return cards
-    .map(card => ({
-      name: card.querySelector(".name")?.textContent?.trim() || "",
-      profile_url: card.dataset.profileUrl || "",
-      company: card.querySelector(".company")?.textContent?.trim() || "",
-      position: card.querySelector(".position")?.textContent?.trim() || ""
-    }))
-    .filter(connection =>
-      connection.name && connection.profile_url
+function extractVisibleLinkedInData() {
+  const results = [];
+
+  // Look through links currently rendered on the page.
+  const links = document.querySelectorAll("a[href]");
+
+  links.forEach((link) => {
+    const href = link.href;
+
+    // Only consider LinkedIn profile URLs.
+    if (!href.includes("linkedin.com/in/")) {
+      return;
+    }
+
+    const name = link.innerText.trim();
+
+    if (!name) {
+      return;
+    }
+
+    // Avoid duplicate profiles.
+    const alreadyExists = results.some(
+      (item) => item.profile_url === href
     );
+
+    if (alreadyExists) {
+      return;
+    }
+
+    // Try to find nearby visible text for additional information.
+    const parentText =
+      link.parentElement?.innerText?.trim() || "";
+
+    results.push({
+      name: name,
+      profile_url: href.split("?")[0],
+      visible_context: parentText
+    });
+  });
+
+  return results;
 }
 
-const connections = extractConnections();
+function getPageInfo() {
+  return {
+    url: window.location.href,
+    title: document.title,
+    extracted_at: new Date().toISOString()
+  };
+}
 
-chrome.storage.local.set({
-  extractedNetwork: {
-    owner_id: "banker_A",
-    source: "demo_connections_page",
-    connections
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "extractLinkedIn") {
+    const data = extractVisibleLinkedInData();
+
+    console.log("[Warm Graph] Extracted:", data);
+
+    sendResponse({
+      success: true,
+      page: getPageInfo(),
+      count: data.length,
+      connections: data
+    });
   }
-});
 
-console.log("Warm Graph POC extracted:", connections);
+  return true;
+});
