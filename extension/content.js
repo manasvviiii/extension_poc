@@ -1,133 +1,395 @@
 console.log("[Warm Graph] LinkedIn extractor loaded");
 
+
+// --------------------------------------------------
+// STORAGE
+// --------------------------------------------------
+
+const connectionStore = new Map();
+
+
+// --------------------------------------------------
+// HELPERS
+// --------------------------------------------------
+
 function cleanUrl(url) {
   if (!url) return null;
 
   try {
     const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`.replace(/\/$/, "");
+
+    return `${parsed.origin}${parsed.pathname}`
+      .replace(/\/$/, "");
   } catch {
     return url;
   }
 }
 
-function extractLinkedInConnections() {
-  const results = [];
-  const seen = new Set();
 
-  // Find profile links currently rendered on the LinkedIn page
-  const profileLinks = document.querySelectorAll(
-    'a[href*="/in/"]'
-  );
+// --------------------------------------------------
+// EXTRACT CONNECTION CARD
+// --------------------------------------------------
 
-  profileLinks.forEach((link) => {
-    const profileUrl = cleanUrl(link.href);
+function extractCard(link) {
+  const profileUrl = cleanUrl(link.href);
 
-    if (!profileUrl || seen.has(profileUrl)) {
-      return;
+  if (!profileUrl) {
+    return null;
+  }
+
+  const rawName = link.innerText?.trim();
+
+  if (!rawName) {
+    return null;
+  }
+
+  let card = link;
+
+  // Walk up the DOM to find the connection card
+  for (let i = 0; i < 8; i++) {
+
+    if (!card.parentElement) {
+      break;
     }
 
-    const name = link.innerText.trim();
+    card = card.parentElement;
 
-    if (!name) {
-      return;
+    const text =
+      card.innerText?.trim() || "";
+
+    if (text.includes("Connected on")) {
+      break;
     }
+  }
 
-    // Move upward to find the connection card
-    let card = link;
+  const visibleText =
+    card.innerText?.trim() || "";
 
-    for (let i = 0; i < 8; i++) {
-      if (!card.parentElement) break;
+  // Only accept actual connection cards
+  if (!visibleText.includes("Connected on")) {
+    return null;
+  }
 
-      card = card.parentElement;
+  const lines = visibleText
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean);
 
-      const text = card.innerText?.trim() || "";
+  if (!lines.length) {
+    return null;
+  }
 
-      // LinkedIn connection cards contain "Connected on"
-      if (text.includes("Connected on")) {
-        break;
-      }
-    }
+  const connectionIndex =
+    lines.findIndex(
+      line => line.startsWith("Connected on")
+    );
 
-    const visibleText = card.innerText?.trim() || "";
+  const name = lines[0];
 
-    // Only keep actual connection cards
-    if (!visibleText.includes("Connected on")) {
-      return;
-    }
+  const connectionDate =
+    connectionIndex >= 0
+      ? lines[connectionIndex]
+          .replace("Connected on ", "")
+      : null;
 
-    results.push({
-      name: name,
-      profile_url: profileUrl,
-      visible_text: visibleText,
-      source: "linkedin_dom"
-    });
-
-    seen.add(profileUrl);
-  });
-
-  return results;
-}
-
-function getPageInfo() {
-  const path = window.location.pathname;
+  const headline =
+    connectionIndex > 1
+      ? lines
+          .slice(1, connectionIndex)
+          .join(" | ")
+      : null;
 
   return {
-    url: window.location.href,
-    title: document.title,
-
-    page_type: path.includes(
-      "/mynetwork/invite-connect/connections"
-    )
-      ? "connections"
-      : "linkedin_page",
-
-    extracted_at: new Date().toISOString()
+    name: name,
+    profile_url: profileUrl,
+    headline: headline,
+    connection_date: connectionDate,
+    visible_text: visibleText,
+    source: "linkedin_dom"
   };
 }
 
-chrome.runtime.onMessage.addListener(
-  (message, sender, sendResponse) => {
 
-    if (message.action !== "extractLinkedIn") {
+// --------------------------------------------------
+// PROCESS PROFILE LINKS
+// --------------------------------------------------
+
+function processLinks(root) {
+
+  let added = 0;
+
+  // If the added node itself is a profile link
+  if (
+    root.nodeType === Node.ELEMENT_NODE &&
+    root.matches?.('a[href*="/in/"]')
+  ) {
+
+    const connection =
+      extractCard(root);
+
+    if (connection) {
+
+      if (
+        !connectionStore.has(
+          connection.profile_url
+        )
+      ) {
+
+        connectionStore.set(
+          connection.profile_url,
+          connection
+        );
+
+        added++;
+      }
+    }
+  }
+
+
+  // Look for profile links inside the new node
+  if (
+    root.querySelectorAll
+  ) {
+
+    const links =
+      root.querySelectorAll(
+        'a[href*="/in/"]'
+      );
+
+    links.forEach(link => {
+
+      const connection =
+        extractCard(link);
+
+      if (!connection) {
+        return;
+      }
+
+      if (
+        !connectionStore.has(
+          connection.profile_url
+        )
+      ) {
+
+        connectionStore.set(
+          connection.profile_url,
+          connection
+        );
+
+        added++;
+      }
+    });
+  }
+
+  return added;
+}
+
+
+// --------------------------------------------------
+// INITIAL SCAN
+// --------------------------------------------------
+
+function scanCurrentDOM() {
+
+  let added = 0;
+
+  const links =
+    document.querySelectorAll(
+      'a[href*="/in/"]'
+    );
+
+  links.forEach(link => {
+
+    const connection =
+      extractCard(link);
+
+    if (!connection) {
       return;
     }
 
-    try {
-      const connections = extractLinkedInConnections();
+    if (
+      !connectionStore.has(
+        connection.profile_url
+      )
+    ) {
 
-      console.log(
-        "[Warm Graph] Found:",
-        connections.length
+      connectionStore.set(
+        connection.profile_url,
+        connection
       );
 
-      console.log(
-        "[Warm Graph] Data:",
-        connections
+      added++;
+    }
+  });
+
+  if (added > 0) {
+
+    console.log(
+      `[Warm Graph] Initial scan added ${added}`
+    );
+
+    console.log(
+      `[Warm Graph] Total captured: ${connectionStore.size}`
+    );
+  }
+
+  return added;
+}
+
+
+// --------------------------------------------------
+// WATCH FOR NEW DOM CONTENT
+// --------------------------------------------------
+
+const observer =
+  new MutationObserver(
+    mutations => {
+
+      let added = 0;
+
+      mutations.forEach(
+        mutation => {
+
+          if (
+            mutation.type !== "childList"
+          ) {
+            return;
+          }
+
+          mutation.addedNodes.forEach(
+            node => {
+
+              if (
+                node.nodeType !==
+                Node.ELEMENT_NODE
+              ) {
+                return;
+              }
+
+              added +=
+                processLinks(node);
+            }
+          );
+        }
       );
+
+      if (added > 0) {
+
+        console.log(
+          `[Warm Graph] Added ${added} new connections`
+        );
+
+        console.log(
+          `[Warm Graph] Total captured: ${connectionStore.size}`
+        );
+      }
+    }
+  );
+
+
+// Start observing after body exists
+if (document.body) {
+
+  observer.observe(
+    document.body,
+    {
+      childList: true,
+      subtree: true
+    }
+  );
+}
+
+
+// Initial page scan
+scanCurrentDOM();
+
+
+// --------------------------------------------------
+// POPUP COMMUNICATION
+// --------------------------------------------------
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    sender,
+    sendResponse
+  ) => {
+
+    // ----------------------------------------------
+    // GET CURRENT CAPTURED DATA
+    // ----------------------------------------------
+
+    if (
+      message.action ===
+      "extractLinkedIn"
+    ) {
+
+      // Scan once more in case something
+      // was rendered without an observer event
+      const newlyAdded =
+        scanCurrentDOM();
+
+      const connections =
+        Array.from(
+          connectionStore.values()
+        );
 
       sendResponse({
+
         success: true,
-        page: getPageInfo(),
-        count: connections.length,
-        connections: connections
+
+        page: {
+          url:
+            window.location.href,
+
+          title:
+            document.title,
+
+          page_type:
+            window.location.pathname.includes(
+              "/mynetwork/invite-connect/connections"
+            )
+              ? "connections"
+              : "linkedin_page",
+
+          extracted_at:
+            new Date().toISOString()
+        },
+
+        batch_added:
+          newlyAdded,
+
+        count:
+          connections.length,
+
+        connections:
+          connections
       });
 
-    } catch (error) {
-
-      console.error(
-        "[Warm Graph] Extraction error:",
-        error
-      );
-
-      sendResponse({
-        success: false,
-        error: error.message,
-        count: 0,
-        connections: []
-      });
+      return true;
     }
 
-    return true;
+
+    // ----------------------------------------------
+    // CLEAR DATA
+    // ----------------------------------------------
+
+    if (
+      message.action ===
+      "clearLinkedInData"
+    ) {
+
+      connectionStore.clear();
+
+      sendResponse({
+
+        success: true,
+
+        count: 0
+
+      });
+
+      return true;
+    }
   }
 );

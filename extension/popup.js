@@ -21,7 +21,7 @@ document
       return;
     }
 
-    // Make sure we're actually on LinkedIn
+    // LinkedIn ONLY
     if (!tab.url || !tab.url.includes("linkedin.com")) {
       output.textContent =
         "Please open a LinkedIn page first.";
@@ -29,7 +29,7 @@ document
     }
 
     output.textContent =
-      "Extracting data from LinkedIn...";
+      "Reading captured LinkedIn connections...";
 
     chrome.tabs.sendMessage(
       tab.id,
@@ -43,7 +43,7 @@ document
             "Could not connect to LinkedIn page.\n\n" +
             chrome.runtime.lastError.message +
             "\n\n" +
-            "Try refreshing the LinkedIn page and reload the extension.";
+            "Refresh the LinkedIn page and reload the extension.";
 
           return;
         }
@@ -51,6 +51,7 @@ document
         if (!response) {
           output.textContent =
             "No response received from LinkedIn.";
+
           return;
         }
 
@@ -62,12 +63,16 @@ document
           return;
         }
 
-        // Save extracted data for backend upload
         latestData = response;
 
         output.textContent =
-          `Found ${response.count} records\n\n` +
-          JSON.stringify(response, null, 2);
+          `Captured records: ${response.count}\n` +
+          `New in this scan: ${response.batch_added}\n\n` +
+          JSON.stringify(
+            response.connections,
+            null,
+            2
+          );
       }
     );
   });
@@ -92,7 +97,7 @@ document
       latestData.connections.length === 0
     ) {
       output.textContent =
-        "No LinkedIn connection records to send.";
+        "No LinkedIn connection records captured.";
       return;
     }
 
@@ -119,18 +124,25 @@ document
       );
 
       if (!response.ok) {
-        const errorText = await response.text();
+
+        const errorText =
+          await response.text();
 
         throw new Error(
           `Backend returned ${response.status}: ${errorText}`
         );
       }
 
-      const result = await response.json();
+      const result =
+        await response.json();
 
       output.textContent =
         "Successfully sent to backend.\n\n" +
-        JSON.stringify(result, null, 2);
+        JSON.stringify(
+          result,
+          null,
+          2
+        );
 
     } catch (error) {
 
