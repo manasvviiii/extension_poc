@@ -1,46 +1,330 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Warm Graph</title>
 
   <style>
+    * {
+      box-sizing: border-box;
+    }
+
     body {
-      width: 400px;
+      width: 420px;
+      min-height: 560px;
+      margin: 0;
       padding: 16px;
       font-family: Arial, sans-serif;
+      background: #ffffff;
+      color: #111111;
+    }
+
+    h2 {
+      margin: 0 0 4px;
+      font-size: 19px;
+    }
+
+    .subtitle {
+      margin: 0 0 14px;
+      color: #666;
+      font-size: 12px;
+    }
+
+    .section {
+      margin-bottom: 14px;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fafafa;
+    }
+
+    .section-title {
+      margin-bottom: 9px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    #identity {
+      margin-bottom: 12px;
+      padding: 9px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-line;
+    }
+
+    #identity.detected {
+      background: #e8f4ea;
+      border: 1px solid #b6dcbc;
+      color: #1e4620;
+    }
+
+    #identity.pending {
+      background: #fdf3e3;
+      border: 1px solid #f0d9a6;
+      color: #6b4e00;
     }
 
     button {
       width: 100%;
-      padding: 10px;
-      margin-bottom: 10px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      border: 1px solid #aaa;
+      border-radius: 6px;
+      background: #f5f5f5;
       cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
     }
 
-    pre {
-      max-height: 500px;
-      overflow: auto;
+    button:hover {
+      background: #e9e9e9;
+    }
+
+    #extract {
+      background: #111;
+      color: white;
+      border-color: #111;
+    }
+
+    #extract:hover {
+      background: #333;
+    }
+
+    #send {
+      background: #eef4ff;
+      border-color: #b8c9e8;
+    }
+
+    label {
+      display: block;
+      margin: 8px 0 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #bbb;
+      border-radius: 5px;
+      font-size: 12px;
+      background: white;
+    }
+
+    hr {
+      border: 0;
+      border-top: 1px solid #ddd;
+      margin: 14px 0;
+    }
+
+    #output {
+      margin-top: 10px;
+      max-height: 360px;
+      overflow-y: auto;
+    }
+
+    .status-box {
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 7px;
+      background: #f7f7f7;
+      font-size: 12px;
+      line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
+    }
+
+    .summary {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .summary-card {
+      flex: 1;
+      padding: 9px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: white;
+      text-align: center;
+    }
+
+    .summary-number {
+      display: block;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .summary-label {
+      display: block;
+      margin-top: 2px;
+      color: #666;
+      font-size: 10px;
+    }
+
+    .record {
+      margin-bottom: 9px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 7px;
+      background: white;
+    }
+
+    .record:last-child {
+      margin-bottom: 0;
+    }
+
+    .record-name {
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .record-headline {
+      margin-top: 3px;
+      color: #555;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .record-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 7px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 6px;
+      border-radius: 10px;
+      background: #f0f0f0;
+      color: #444;
+      font-size: 10px;
+    }
+
+    .mutual {
+      margin-top: 7px;
+      padding-top: 7px;
+      border-top: 1px solid #eee;
+      font-size: 11px;
+    }
+
+    .mutual strong {
+      font-weight: 700;
+    }
+
+    .record-link {
+      display: block;
+      margin-top: 7px;
+      color: #2457a6;
+      font-size: 10px;
+      text-decoration: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .empty {
+      color: #777;
+      text-align: center;
     }
   </style>
 </head>
 
 <body>
 
-  <h3>Warm Graph — LinkedIn POC</h3>
+  <h2>Warm Graph</h2>
+  <p class="subtitle">Warm-introduction network</p>
 
-  <button id="extract">
-    Extract LinkedIn Data
+  <div id="identity" class="pending">
+    Detecting your LinkedIn identity...
+  </div>
+
+  <div class="section">
+    <div class="section-title">1. Extract visible data</div>
+
+    <button id="extract">
+      Extract LinkedIn Data
+    </button>
+
+    <button id="send">
+      Send to Backend
+    </button>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Extraction Preview</div>
+
+    <div id="output">
+      <div class="status-box empty">
+        No data extracted yet.
+
+        Open the synthetic test page and click
+        "Extract LinkedIn Data".
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Target Search</div>
+
+    <label for="company">Target company</label>
+    <input
+      id="company"
+      placeholder="Example Corp"
+    >
+
+    <label for="dealSide">Deal side</label>
+    <select id="dealSide">
+      <option value="sell_side">Sell-side</option>
+      <option value="buy_side">Buy-side</option>
+    </select>
+
+    <label for="targetRole">Target role (optional)</label>
+    <input
+      id="targetRole"
+      placeholder="CFO"
+    >
+
+    <button id="refresh">
+      Refresh Data
+    </button>
+
+    <button id="searchTarget">
+      Find Target Person
+    </button>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Warm Path</div>
+
+    <label for="pathTarget">
+      Warm path target URL
+    </label>
+
+    <input
+      id="pathTarget"
+      placeholder="https://www.linkedin.com/in/..."
+    >
+
+    <button id="findPath">
+      Find Warm Path
+    </button>
+     <button id="explainPath">
+    Explain Path
   </button>
+    <button id="searchNetwork">
+      Search Network
+    </button>
 
-  <button id="send">
-    Send to Backend
-  </button>
-
-  <pre id="output">Captured records: 0
-
-Open LinkedIn Connections and click Extract.</pre>
+    <button id="viewGraph">
+      View Graph
+    </button>
+  </div>
 
   <script src="popup.js"></script>
 

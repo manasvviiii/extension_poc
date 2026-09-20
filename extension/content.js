@@ -1,312 +1,1194 @@
-console.log("[Warm Graph] LinkedIn extractor loaded");
-
-
-// --------------------------------------------------
-// STORAGE
-// --------------------------------------------------
-
 const connectionStore = new Map();
+const relationshipEvidenceStore = new Map();
 
 
-// --------------------------------------------------
-// HELPERS
-// --------------------------------------------------
+// =========================================================
+// OWNER IDENTITY
+// =========================================================
 
-function cleanUrl(url) {
-  if (!url) return null;
+const BACKEND_BASE_URL = "http://127.0.0.1:8000";
+
+let cachedOwnerId = null;
+
+function createStableOwnerId() {
+  const id =
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  return `warmgraph_${id}`;
+}
+
+function getOwnerId() {
+  if (cachedOwnerId) {
+    return Promise.resolve(cachedOwnerId);
+  }
+
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["ownerId"], (result) => {
+      if (result.ownerId) {
+        cachedOwnerId = result.ownerId;
+        resolve(cachedOwnerId);
+        return;
+      }
+
+      cachedOwnerId = createStableOwnerId();
+
+      chrome.storage.local.set({
+        ownerId: cachedOwnerId
+      });
+
+      resolve(cachedOwnerId);
+    });
+  });
+}
+
+
+// =========================================================
+// TEXT HELPERS
+// =========================================================
+
+function cleanText(value) {
+  return (value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
+function normalizeProfileUrl(href) {
+  if (!href) return null;
 
   try {
-    const parsed = new URL(url);
+    const url = new URL(
+      href,
+      window.location.origin
+    );
 
-    return `${parsed.origin}${parsed.pathname}`
-      .replace(/\/$/, "");
+    if (!url.pathname.startsWith("/in/")) {
+      return null;
+    }
+
+    return `${url.origin}${url.pathname}`.replace(
+      /\/$/,
+      ""
+    );
+
   } catch {
-    return url;
+    return null;
   }
 }
 
 
-// --------------------------------------------------
-// EXTRACT CONNECTION CARD
-// --------------------------------------------------
+function getPageType() {
+  const url = window.location.href;
 
-function extractCard(link) {
-  const profileUrl = cleanUrl(link.href);
-
-  if (!profileUrl) {
-    return null;
+  if (url.includes("/search/results/people/")) {
+    return "linkedin_people_search";
   }
 
-  const rawName = link.innerText?.trim();
-
-  if (!rawName) {
-    return null;
+  if (url.includes("/mynetwork/")) {
+    return "linkedin_network";
   }
 
-  let card = link;
-
-  // Walk up the DOM to find the connection card
-  for (let i = 0; i < 8; i++) {
-
-    if (!card.parentElement) {
-      break;
-    }
-
-    card = card.parentElement;
-
-    const text =
-      card.innerText?.trim() || "";
-
-    if (text.includes("Connected on")) {
-      break;
-    }
+  if (url.includes("/in/")) {
+    return "linkedin_profile";
   }
 
-  const visibleText =
-    card.innerText?.trim() || "";
+  return "linkedin_other";
+}
 
-  // Only accept actual connection cards
-  if (!visibleText.includes("Connected on")) {
-    return null;
-  }
 
-  const lines = visibleText
+function getCardLines(card) {
+  return (card.innerText || "")
     .split("\n")
-    .map(line => line.trim())
+    .map(cleanText)
     .filter(Boolean);
+}
 
-  if (!lines.length) {
-    return null;
-  }
 
-  const connectionIndex =
-    lines.findIndex(
-      line => line.startsWith("Connected on")
+function getSemanticText(root, patterns) {
+  for (const selector of patterns) {
+    const element =
+      root.querySelector(selector);
+
+    const text = cleanText(
+      element &&
+      (element.innerText || element.textContent)
     );
 
-  const name = lines[0];
+    if (text) {
+      return text;
+    }
+  }
+
+  return null;
+}
+
+
+function removeKnownText(value, knownValues) {
+  let result = value;
+
+  for (const knownValue of knownValues) {
+    if (knownValue) {
+      result = result.replace(
+        knownValue,
+        " "
+      );
+    }
+  }
+
+  return cleanText(result);
+}
+
+
+// =========================================================
+// PROFILE / CARD DETECTION
+// =========================================================
+
+function getProfileAnchor(root) {
+
+  for (
+    const anchor of root.querySelectorAll(
+      'a[href*="/in/"]'
+    )
+  ) {
+
+    const profileUrl =
+      normalizeProfileUrl(anchor.href);
+
+    if (!profileUrl) continue;
+
+
+    const semanticName =
+      getSemanticText(anchor, [
+        "[data-test-person-name]",
+        'span[aria-hidden="true"]'
+      ]);
+
+
+    const anchorLines =
+      getCardLines(anchor);
+
+    const anchorText =
+      cleanText(anchor.innerText);
+
+    const degreeMatch =
+      anchorText.match(
+        /\b(1st|2nd|3rd\+)(?!\w)/
+      );
+
+
+    const rootLines =
+      getCardLines(root);
+
+
+    const beforeDegree =
+      degreeMatch
+        ? anchorText.slice(
+            0,
+            degreeMatch.index
+          )
+        : semanticName
+          ? semanticName
+          : anchorLines.length > 1
+            ? anchorLines[0]
+            : rootLines[0] ||
+              anchorLines[0] ||
+              anchorText;
+
+
+    const name =
+      cleanText(
+        beforeDegree
+      )
+        .replace(
+          /[•·|,:-]+$/,
+          ""
+        )
+        .trim();
+
+
+    if (name) {
+      return {
+        anchor,
+        profile_url: profileUrl,
+        name
+      };
+    }
+  }
+
+  return null;
+}
+
+
+function getCardRoot(anchor) {
+
+  let current = anchor;
+
+  for (
+    let i = 0;
+    i < 10 && current;
+    i++
+  ) {
+
+    const text =
+      cleanText(
+        current.innerText
+      );
+
+
+    if (
+      text.length >= 20 &&
+      text.length <= 4000 &&
+      (
+        /connected on/i.test(text) ||
+        /\b(?:1st|2nd|3rd\+)(?!\w)/.test(text)
+      )
+    ) {
+      return current;
+    }
+
+
+    current =
+      current.parentElement;
+  }
+
+  return (
+    anchor.parentElement ||
+    anchor
+  );
+}
+
+
+// =========================================================
+// DEGREE
+// =========================================================
+
+function extractDegree(text) {
+
+  const match =
+    text.match(
+      /\b(1st|2nd|3rd\+)(?!\w)/
+    );
+
+  return match
+    ? match[1]
+    : null;
+}
+
+
+// =========================================================
+// MUTUAL CONNECTIONS
+// =========================================================
+
+function getRelationshipLines(card) {
+  return getCardLines(card)
+    .map(cleanText);
+}
+
+
+function extractMutualConnectionsText(
+  card,
+  text
+) {
+
+  const semanticMutual =
+    getSemanticText(card, [
+      '[data-field="mutual-connections"]',
+      '[data-test-mutual-connections]',
+      '[class*="mutual"]'
+    ]);
+
+
+  if (
+    semanticMutual &&
+    /mutual connections?/i.test(
+      semanticMutual
+    )
+  ) {
+    return semanticMutual;
+  }
+
+
+  const lines =
+    getRelationshipLines(card);
+
+
+  const mutualLine =
+    lines.find((line) =>
+      /mutual connections?/i.test(
+        line
+      )
+    );
+
+
+  if (mutualLine) {
+
+    const mutualMatch =
+      mutualLine.match(
+        /([A-Za-z][^.!?]*?\b(?:mutual connections?|mutual connection)\b)/i
+      );
+
+    if (mutualMatch) {
+      return cleanText(
+        mutualMatch[1]
+      );
+    }
+  }
+
+
+  const afterDegree =
+    text.replace(
+      /^.*?\b(?:1st|2nd|3rd\+)(?!\w)/i,
+      ""
+    );
+
+
+  const locationMatch =
+    afterDegree.match(
+      /\b[A-Z][^,\n]+,\s*[A-Z][^,\n]+(?:,\s*[A-Z][^,\n]+)?/
+    );
+
+
+  const afterLocation =
+    locationMatch
+      ? afterDegree.slice(
+          locationMatch.index +
+          locationMatch[0].length
+        )
+      : afterDegree;
+
+
+  const match =
+    afterLocation.match(
+      /([^.!?]*?\b(?:mutual connections?|mutual connection)\b)/i
+    );
+
+
+  return match
+    ? cleanText(match[1])
+    : null;
+}
+
+
+function normalizeNameForComparison(value) {
+
+  return (value || "")
+    .toLocaleLowerCase()
+    .replace(
+      /[^\p{L}\p{N}]+/gu,
+      ""
+    )
+    .trim();
+}
+
+
+function extractMutualConnectionNames(
+  mutualText,
+  targetName
+) {
+
+  if (!mutualText) {
+    return [];
+  }
+
+
+  let namesText =
+    mutualText
+      .replace(
+        /\s*&\s*\d+\s+other\s+mutual\s+connections?\s*$/i,
+        ""
+      )
+      .replace(
+        /\s+and\s+\d+\s+other\s+mutual\s+connections?\s*$/i,
+        ""
+      )
+      .replace(
+        /\s+other\s+mutual\s+connections?\s*$/i,
+        ""
+      )
+      .replace(
+        /\s+(?:is\s+a\s+mutual\s+connection|are\s+mutual\s+connections?)\s*$/i,
+        ""
+      )
+      .trim();
+
+
+  const targetNameKey =
+    normalizeNameForComparison(
+      targetName
+    );
+
+
+  /*
+   * Handles:
+   *
+   * Person A is a mutual connection
+   *
+   * Person A and Person B are mutual connections
+   *
+   * Person A, Person B and Person C
+   */
+
+  return namesText
+    .split(
+      /\s*(?:,|&|\band\b)\s*/i
+    )
+    .map(cleanText)
+    .filter(Boolean)
+    .filter(
+      (name) =>
+        normalizeNameForComparison(
+          name
+        ) !== targetNameKey
+    );
+}
+
+
+// =========================================================
+// LOCATION
+// =========================================================
+
+function extractLocation(
+  card,
+  text,
+  mutualText
+) {
+
+  const semanticLocation =
+    getSemanticText(card, [
+      '[data-field="location"]',
+      '[data-test-location]',
+      '[class*="location"]'
+    ]);
+
+
+  if (semanticLocation) {
+    return semanticLocation;
+  }
+
+
+  const lines =
+    getRelationshipLines(card);
+
+
+  const mutualIndex =
+    lines.findIndex((line) =>
+      /mutual connections?/i.test(
+        line
+      )
+    );
+
+
+  const locationCandidates =
+    lines
+      .slice(
+        0,
+        mutualIndex >= 0
+          ? mutualIndex
+          : lines.length
+      )
+      .filter((line) =>
+        line.includes(",") &&
+        !/\b(?:1st|2nd|3rd\+)(?!\w)/i.test(line) &&
+        !/mutual connections?/i.test(line)
+      );
+
+
+  if (
+    locationCandidates.length > 0
+  ) {
+
+    return locationCandidates[
+      locationCandidates.length - 1
+    ];
+  }
+
+
+  const withoutPrefix =
+    text.replace(
+      /^.*?\b(?:1st|2nd|3rd\+)(?!\w)/i,
+      ""
+    );
+
+
+  const beforeMutual =
+    mutualText
+      ? withoutPrefix.split(
+          mutualText
+        )[0]
+      : withoutPrefix;
+
+
+  const matches =
+    beforeMutual.match(
+      /\b[A-Z][^,\n]+,\s*[A-Z][^,\n]+(?:,\s*[A-Z][^,\n]+)?/g
+    );
+
+
+  return matches
+    ? cleanText(
+        matches[matches.length - 1]
+      )
+    : null;
+}
+
+
+// =========================================================
+// FOLLOWERS
+// =========================================================
+
+function extractFollowers(
+  card,
+  text
+) {
+
+  const semanticFollowers =
+    getSemanticText(card, [
+      '[data-field="followers"]',
+      '[data-test-followers]',
+      '[class*="follower"]'
+    ]);
+
+
+  if (semanticFollowers) {
+    return semanticFollowers;
+  }
+
+
+  const match =
+    text.match(
+      /\b[\d,.]+(?:K|M|B)?\s+followers\b/i
+    );
+
+
+  return match
+    ? cleanText(match[0])
+    : null;
+}
+
+
+// =========================================================
+// HEADLINE
+// =========================================================
+
+function extractHeadline(
+  card,
+  text,
+  name,
+  degree,
+  location,
+  mutualText,
+  followers
+) {
+
+  /*
+   * First preference:
+   * explicit headline element.
+   */
+
+  const semanticHeadline =
+    getSemanticText(card, [
+      '[data-field="headline"]',
+      '[data-test-headline]',
+      '[class*="headline"]'
+    ]);
+
+
+  if (
+    semanticHeadline &&
+    semanticHeadline !== name &&
+    semanticHeadline !== location
+  ) {
+    return semanticHeadline;
+  }
+
+
+  /*
+   * Second preference:
+   * inspect individual card lines.
+   *
+   * Typical synthetic card:
+   *
+   * Target Person
+   * Head of Corporate Development at Company B
+   * 2nd
+   * Person A is a mutual connection
+   * Bengaluru, Karnataka, India
+   * Connect
+   */
+
+
+  const lines =
+    getRelationshipLines(card);
+
+
+  const degreeIndex =
+    lines.findIndex((line) =>
+      new RegExp(
+        `\\b${degree.replace(
+          "+",
+          "\\+"
+        )}(?!\\w)`,
+        "i"
+      ).test(line)
+    );
+
+
+  const mutualIndex =
+    lines.findIndex((line) =>
+      /mutual connections?/i.test(
+        line
+      )
+    );
+
+
+  /*
+   * Search the complete card for a likely
+   * headline, excluding known metadata.
+   */
+
+  const candidateLines =
+    lines.filter((line, index) => {
+
+      if (line === name) {
+        return false;
+      }
+
+      if (line === location) {
+        return false;
+      }
+
+      if (line === followers) {
+        return false;
+      }
+
+      if (
+        degree &&
+        new RegExp(
+          `\\b${degree.replace(
+            "+",
+            "\\+"
+          )}(?!\\w)`,
+          "i"
+        ).test(line)
+      ) {
+        return false;
+      }
+
+      if (
+        /mutual connections?/i.test(
+          line
+        )
+      ) {
+        return false;
+      }
+
+      if (
+        /^(connect|follow|message)$/i.test(
+          line
+        )
+      ) {
+        return false;
+      }
+
+      if (
+        /^[\d,.]+(?:K|M|B)?\s+followers$/i.test(
+          line
+        )
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+
+  /*
+   * The first remaining meaningful line is
+   * normally the headline.
+   */
+
+  if (
+    candidateLines.length > 0
+  ) {
+    return candidateLines[0];
+  }
+
+
+  /*
+   * Final fallback.
+   */
+
+  let remainder =
+    text.replace(
+      new RegExp(
+        `^.*?\\b${degree.replace(
+          "+",
+          "\\+"
+        )}(?!\\w)`,
+        "i"
+      ),
+      ""
+    );
+
+
+  remainder =
+    removeKnownText(
+      remainder,
+      [
+        location,
+        mutualText,
+        followers,
+        name
+      ]
+    );
+
+
+  remainder =
+    remainder.replace(
+      /\b(?:connect|follow|message)\b/gi,
+      " "
+    );
+
+
+  return (
+    cleanText(remainder) ||
+    null
+  );
+}
+
+
+// =========================================================
+// FIRST-DEGREE CONNECTION
+// =========================================================
+
+function extractFirstDegreeCard(
+  card,
+  profileAnchor
+) {
+
+  const text =
+    cleanText(card.innerText);
+
+
+  if (
+    !/connected on/i.test(text)
+  ) {
+    return null;
+  }
+
+
+  const lines =
+    getCardLines(card);
+
+
+  const connectedLine =
+    lines.find((line) =>
+      /connected on/i.test(line)
+    );
+
 
   const connectionDate =
-    connectionIndex >= 0
-      ? lines[connectionIndex]
-          .replace("Connected on ", "")
+    connectedLine
+      ? cleanText(
+          connectedLine.replace(
+            /.*connected on\s*/i,
+            ""
+          )
+        )
       : null;
+
+
+  const headlineCandidates =
+    lines.filter((line) =>
+      line !== profileAnchor.name &&
+      !/connected on/i.test(line) &&
+      !/^(message|follow|connect)$/i.test(line)
+    );
+
 
   const headline =
-    connectionIndex > 1
-      ? lines
-          .slice(1, connectionIndex)
-          .join(" | ")
+    headlineCandidates.length > 0
+      ? headlineCandidates[0]
       : null;
 
+
   return {
-    name: name,
-    profile_url: profileUrl,
-    headline: headline,
-    connection_date: connectionDate,
-    visible_text: visibleText,
-    source: "linkedin_dom"
+
+    name:
+      profileAnchor.name,
+
+    profile_url:
+      profileAnchor.profile_url,
+
+    degree:
+      "1st",
+
+    connection_date:
+      connectionDate,
+
+    headline,
+
+    relationship_type:
+      "KNOWS",
+
+    evidence_type:
+      "connection_card",
+
+    source:
+      "linkedin_dom",
+
+    page_url:
+      window.location.href,
+
+    visible_text:
+      text
   };
 }
 
 
-// --------------------------------------------------
-// PROCESS PROFILE LINKS
-// --------------------------------------------------
+// =========================================================
+// RELATIONSHIP EVIDENCE
+// =========================================================
 
-function processLinks(root) {
+function extractRelationshipEvidence(
+  card,
+  profileAnchor
+) {
 
-  let added = 0;
+  const text =
+    cleanText(card.innerText);
 
-  // If the added node itself is a profile link
+
+  const observedDegree =
+    extractDegree(text);
+
+
   if (
-    root.nodeType === Node.ELEMENT_NODE &&
-    root.matches?.('a[href*="/in/"]')
+    !observedDegree ||
+    observedDegree === "1st"
   ) {
-
-    const connection =
-      extractCard(root);
-
-    if (connection) {
-
-      if (
-        !connectionStore.has(
-          connection.profile_url
-        )
-      ) {
-
-        connectionStore.set(
-          connection.profile_url,
-          connection
-        );
-
-        added++;
-      }
-    }
+    return null;
   }
 
 
-  // Look for profile links inside the new node
+  const mutualText =
+    extractMutualConnectionsText(
+      card,
+      text
+    );
+
+
   if (
-    root.querySelectorAll
+    observedDegree === "2nd" &&
+    !mutualText
   ) {
-
-    const links =
-      root.querySelectorAll(
-        'a[href*="/in/"]'
-      );
-
-    links.forEach(link => {
-
-      const connection =
-        extractCard(link);
-
-      if (!connection) {
-        return;
-      }
-
-      if (
-        !connectionStore.has(
-          connection.profile_url
-        )
-      ) {
-
-        connectionStore.set(
-          connection.profile_url,
-          connection
-        );
-
-        added++;
-      }
-    });
+    return null;
   }
 
-  return added;
+
+  const mutualConnectionNames =
+    extractMutualConnectionNames(
+      mutualText,
+      profileAnchor.name
+    );
+
+
+  const location =
+    extractLocation(
+      card,
+      text,
+      mutualText
+    );
+
+
+  const followers =
+    extractFollowers(
+      card,
+      text
+    );
+
+
+  const headline =
+    extractHeadline(
+      card,
+      text,
+      profileAnchor.name,
+      observedDegree,
+      location,
+      mutualText,
+      followers
+    );
+
+
+  return {
+
+    name:
+      profileAnchor.name,
+
+    profile_url:
+      profileAnchor.profile_url,
+
+    observed_degree:
+      observedDegree,
+
+    headline,
+
+    location,
+
+    followers,
+
+    mutual_connections_text:
+      mutualText,
+
+    mutual_connection_names:
+      mutualConnectionNames,
+
+    relationship_type:
+      "OBSERVED_RELATIONSHIP",
+
+    evidence_type:
+      observedDegree === "2nd"
+        ? "mutual_connection_ui"
+        : "degree_indicator",
+
+    source:
+      "linkedin_dom",
+
+    page_url:
+      window.location.href,
+
+    captured_at:
+      new Date().toISOString(),
+
+    visible_text:
+      text
+  };
 }
 
 
-// --------------------------------------------------
-// INITIAL SCAN
-// --------------------------------------------------
+// =========================================================
+// RECORD MERGING
+// =========================================================
 
-function scanCurrentDOM() {
+function mergeRecord(
+  previous,
+  current
+) {
 
-  let added = 0;
+  const merged = {
+    ...previous
+  };
 
-  const links =
-    document.querySelectorAll(
-      'a[href*="/in/"]'
-    );
 
-  links.forEach(link => {
-
-    const connection =
-      extractCard(link);
-
-    if (!connection) {
-      return;
-    }
+  for (
+    const [key, value]
+    of Object.entries(current)
+  ) {
 
     if (
-      !connectionStore.has(
-        connection.profile_url
-      )
+      value !== null &&
+      value !== undefined &&
+      value !== ""
     ) {
-
-      connectionStore.set(
-        connection.profile_url,
-        connection
-      );
-
-      added++;
+      merged[key] = value;
     }
-  });
-
-  if (added > 0) {
-
-    console.log(
-      `[Warm Graph] Initial scan added ${added}`
-    );
-
-    console.log(
-      `[Warm Graph] Total captured: ${connectionStore.size}`
-    );
   }
 
-  return added;
+
+  return merged;
 }
 
 
-// --------------------------------------------------
-// WATCH FOR NEW DOM CONTENT
-// --------------------------------------------------
+function recordFingerprint(record) {
+  return JSON.stringify(
+    record,
+    Object.keys(record).sort()
+  );
+}
 
-const observer =
-  new MutationObserver(
-    mutations => {
 
-      let added = 0;
+// =========================================================
+// PAGE SCAN
+// =========================================================
 
-      mutations.forEach(
-        mutation => {
+function scanLinkedInPage() {
 
-          if (
-            mutation.type !== "childList"
-          ) {
-            return;
-          }
+  let firstDegreeAdded = 0;
+  let firstDegreeUpdated = 0;
 
-          mutation.addedNodes.forEach(
-            node => {
+  let relationshipEvidenceAdded = 0;
+  let relationshipEvidenceUpdated = 0;
 
-              if (
-                node.nodeType !==
-                Node.ELEMENT_NODE
-              ) {
-                return;
-              }
 
-              added +=
-                processLinks(node);
-            }
-          );
-        }
+  for (
+    const anchor of document.querySelectorAll(
+      'a[href*="/in/"]'
+    )
+  ) {
+
+    const profileUrl =
+      normalizeProfileUrl(
+        anchor.href
       );
 
-      if (added > 0) {
 
-        console.log(
-          `[Warm Graph] Added ${added} new connections`
+    if (!profileUrl) {
+      continue;
+    }
+
+
+    const card =
+      getCardRoot(anchor);
+
+
+    if (!card) {
+      continue;
+    }
+
+
+    const profileAnchor =
+      getProfileAnchor(card);
+
+
+    if (
+      !profileAnchor ||
+      profileAnchor.profile_url !== profileUrl
+    ) {
+      continue;
+    }
+
+
+    const firstDegree =
+      extractFirstDegreeCard(
+        card,
+        profileAnchor
+      );
+
+
+    if (firstDegree) {
+
+      const existing =
+        connectionStore.get(
+          profileUrl
         );
 
-        console.log(
-          `[Warm Graph] Total captured: ${connectionStore.size}`
-        );
+
+      connectionStore.set(
+        profileUrl,
+        mergeRecord(
+          existing || {},
+          firstDegree
+        )
+      );
+
+
+      if (!existing) {
+        firstDegreeAdded++;
+      } else if (
+        recordFingerprint(existing) !==
+        recordFingerprint(firstDegree)
+      ) {
+        firstDegreeUpdated++;
       }
+
+
+      continue;
     }
-  );
 
 
-// Start observing after body exists
-if (document.body) {
+    const evidence =
+      extractRelationshipEvidence(
+        card,
+        profileAnchor
+      );
 
-  observer.observe(
-    document.body,
-    {
-      childList: true,
-      subtree: true
+
+    if (!evidence) {
+      continue;
     }
-  );
+
+
+    const key =
+      `${profileUrl}|${evidence.observed_degree}`;
+
+
+    const existing =
+      relationshipEvidenceStore.get(
+        key
+      );
+
+
+    relationshipEvidenceStore.set(
+      key,
+      mergeRecord(
+        existing || {},
+        evidence
+      )
+    );
+
+
+    if (!existing) {
+      relationshipEvidenceAdded++;
+    } else if (
+      recordFingerprint(existing) !==
+      recordFingerprint(evidence)
+    ) {
+      relationshipEvidenceUpdated++;
+    }
+  }
+
+
+  return {
+
+    first_degree_added:
+      firstDegreeAdded,
+
+    first_degree_updated:
+      firstDegreeUpdated,
+
+    relationship_evidence_added:
+      relationshipEvidenceAdded,
+
+    relationship_evidence_updated:
+      relationshipEvidenceUpdated
+  };
 }
 
 
-// Initial page scan
-scanCurrentDOM();
+// =========================================================
+// MANUAL EXTRACTION TRIGGER
+// =========================================================
+
+function scanAndMaybeSync() {
+
+  const result =
+    scanLinkedInPage();
 
 
-// --------------------------------------------------
-// POPUP COMMUNICATION
-// --------------------------------------------------
+  try {
+
+    chrome.runtime.sendMessage({
+      action:
+        "clearRefreshBadge"
+    });
+
+  } catch (error) {
+
+    // Safe to ignore if the extension
+    // was reloaded while this page was open.
+
+  }
+
+
+  return result;
+}
+
+
+// =========================================================
+// POPUP MESSAGE HANDLER
+// =========================================================
 
 chrome.runtime.onMessage.addListener(
   (
@@ -315,81 +1197,123 @@ chrome.runtime.onMessage.addListener(
     sendResponse
   ) => {
 
-    // ----------------------------------------------
-    // GET CURRENT CAPTURED DATA
-    // ----------------------------------------------
-
     if (
-      message.action ===
+      message.action !==
       "extractLinkedIn"
     ) {
+      return;
+    }
 
-      // Scan once more in case something
-      // was rendered without an observer event
-      const newlyAdded =
-        scanCurrentDOM();
 
-      const connections =
-        Array.from(
-          connectionStore.values()
-        );
+    try {
+
+      const result =
+        scanAndMaybeSync();
+
 
       sendResponse({
 
-        success: true,
+        success:
+          true,
 
-        page: {
-          url:
-            window.location.href,
+        page_type:
+          getPageType(),
 
-          title:
-            document.title,
+        page_url:
+          window.location.href,
 
-          page_type:
-            window.location.pathname.includes(
-              "/mynetwork/invite-connect/connections"
-            )
-              ? "connections"
-              : "linkedin_page",
+        first_degree_count:
+          connectionStore.size,
 
-          extracted_at:
-            new Date().toISOString()
-        },
+        relationship_evidence_count:
+          relationshipEvidenceStore.size,
 
         batch_added:
-          newlyAdded,
+          result.first_degree_added,
 
-        count:
-          connections.length,
+        relationship_evidence_added:
+          result.relationship_evidence_added,
 
         connections:
-          connections
+          Array.from(
+            connectionStore.values()
+          ),
+
+        relationship_evidence:
+          Array.from(
+            relationshipEvidenceStore.values()
+          )
+
       });
 
-      return true;
-    }
-
-
-    // ----------------------------------------------
-    // CLEAR DATA
-    // ----------------------------------------------
-
-    if (
-      message.action ===
-      "clearLinkedInData"
-    ) {
-
-      connectionStore.clear();
+    } catch (error) {
 
       sendResponse({
+        success:
+          false,
 
-        success: true,
-
-        count: 0
-
+        error:
+          error.message
       });
 
-      return true;
     }
+
+
+    return true;
   }
+);
+
+
+// =========================================================
+// MUTATION OBSERVER
+// =========================================================
+
+let scanTimer = null;
+
+const SCAN_DEBOUNCE_MS = 800;
+
+
+const observer =
+  new MutationObserver(
+    (mutations) => {
+
+      if (
+        !mutations.some(
+          (mutation) =>
+            mutation.addedNodes.length > 0
+        )
+      ) {
+        return;
+      }
+
+
+      if (scanTimer) {
+        clearTimeout(scanTimer);
+      }
+
+
+      scanTimer =
+        setTimeout(
+          scanAndMaybeSync,
+          SCAN_DEBOUNCE_MS
+        );
+    }
+  );
+
+
+observer.observe(
+  document.documentElement,
+  {
+    childList: true,
+    subtree: true
+  }
+);
+
+
+// Initial scan so the content store
+// is ready when the popup is opened.
+
+setTimeout(
+  scanAndMaybeSync,
+  1500
 );

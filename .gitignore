@@ -4,3 +4,96 @@ __pycache__/
 .venv/
 .env
 "@ | Out-File -Encoding utf8 .gitignore
+data/
+__pycache__/
+*.pyc
+.venv/
+.env
+
+
+backend/data/
+backend/data/networks/*.json
+.venv/
+**/__pycache__/
+backend/data/audit/*.jsonl
+backend/data/jobs/*.json
+backend/data/deals/*
+backend/data/networks/linkedin_user.json
+.env
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime data
+backend/data/audit/*
+backend/data/jobs/*
+backend/data/deals/*
+# Legacy/root runtime network data
+data/networks/*.json
+
+# Personal / imported network data
+backend/data/networks/*.json
+
+# Keep data directories
+!backend/data/audit/.gitkeep
+!backend/data/jobs/.gitkeep
+!backend/data/deals/.gitkeep
+!backend/data/networks/.gitkeep
+
+# Logs / temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local backups
+backup/
+backups/

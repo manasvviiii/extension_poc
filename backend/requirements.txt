@@ -1,2 +1,8 @@
 fastapi
 uvicorn[standard]
+networkx
+pydantic
+pyvis
+SQLAlchemy>=2.0,<3
+alembic>=1.13,<2
+psycopg[binary]>=3.2,<4

@@ -1,0 +1,381 @@
+from __future__ import annotations
+
+import re
+import time
+import uuid
+from typing import Any, Callable
+
+import networkx as nx
+from fastapi import HTTPException
+
+try:
+    from pyvis.network import Network
+except ImportError:
+    Network = None
+
+from auth.context import AuthContext, current_context, require_owner_access
+from auth.audit import security_audit
+from .graph_cache import TenantGraphCache
+from .scoring import rank_paths, score_path, graph_recency_reference_date
+
+
+def profile_node_id(profile_url: str) -> str:
+    return profile_url.rstrip("/")
+
+
+def normalized_person_name(value: str | None) -> str:
+    return re.sub(
+        r"[^\w]",
+        "",
+        " ".join((value or "").casefold().split())
+    )
+
+
+def build_graph_from_network(
+    owner_id: str,
+    network_data: dict[str, Any]
+) -> nx.DiGraph:
+    """
+    Build direct KNOWS edges and evidence-backed 2-hop edges into a
+    graph that belongs ONLY to this owner. Nothing here reads from or
+    writes to any other owner's graph, so two people using the tool
+    never see each other's private connections merged together.
+
+    Only explicitly matched 2nd-degree mutual names create
+    OBSERVED_MUTUAL edges. 3rd+ observations remain evidence-only.
+    """
+    graph = nx.DiGraph()
+    owner_node = owner_id
+
+    graph.add_node(
+        owner_node,
+        node_type="Person",
+        label=owner_id,
+        source="linkedin_dom"
+    )
+
+    connections = network_data.get("connections", [])
+    connection_by_name = {}
+
+    for connection in connections:
+        profile_url = connection.get("profile_url")
+        if not profile_url:
+            continue
+
+        target_id = profile_node_id(profile_url)
+        graph.add_node(
+            target_id,
+            node_type="Person",
+            label=connection.get("name", target_id),
+            degree=connection.get("degree", "1st"),
+            source=connection.get("source", "linkedin_dom")
+        )
+        graph.add_edge(
+            owner_node,
+            target_id,
+            relationship="KNOWS",
+            strength=1.0,
+            source=connection.get("source", "linkedin_dom"),
+            evidence_type=connection.get("evidence_type", "connection_card"),
+            connection_date=connection.get("connection_date"),
+            headline=connection.get("headline")
+        )
+
+        normalized_name = normalized_person_name(connection.get("name"))
+        if normalized_name:
+            connection_by_name[normalized_name] = target_id
+
+    for evidence in network_data.get("relationship_evidence", []):
+        if evidence.get("observed_degree") != "2nd":
+            continue
+
+        target_url = evidence.get("profile_url")
+        if not target_url:
+            continue
+
+        target_id = profile_node_id(target_url)
+        graph.add_node(
+            target_id,
+            node_type="Person",
+            label=evidence.get("name", target_id),
+            observed_degree="2nd",
+            source=evidence.get("source", "linkedin_dom")
+        )
+
+        matched_names = []
+        for mutual_name in evidence.get("mutual_connection_names", []):
+            mutual_id = connection_by_name.get(normalized_person_name(mutual_name))
+            if mutual_id and mutual_name not in matched_names:
+                matched_names.append(mutual_name)
+
+        for mutual_name in matched_names:
+            mutual_id = connection_by_name[normalized_person_name(mutual_name)]
+            graph.add_edge(
+                mutual_id,
+                target_id,
+                relationship="OBSERVED_MUTUAL",
+                strength=1.0,
+                source=evidence.get("source", "linkedin_dom"),
+                evidence_type=evidence.get("evidence_type", "mutual_connection_ui"),
+                mutual_connection_name=mutual_name,
+                mutual_connection_count=len(matched_names),
+                target_profile_url=target_url,
+                evidence_page_url=evidence.get("page_url"),
+                captured_at=evidence.get("captured_at"),
+                observed_degree=evidence.get("observed_degree")
+            )
+
+    return graph
+
+
+class GraphService:
+    """Encapsulates graph construction, caching, retrieval, path finding, and visualization."""
+
+    def __init__(self, cache: TenantGraphCache | None = None) -> None:
+        self.cache = cache if cache is not None else TenantGraphCache()
+
+    def get_owner_graph(
+        self,
+        owner_id: str,
+        auth_context: AuthContext | None = None,
+        load_network_fn: Callable[[str, AuthContext | None], dict[str, Any] | None] | None = None,
+    ) -> nx.DiGraph:
+        context = auth_context if isinstance(auth_context, AuthContext) else current_context()
+        if context is not None and context.authenticated:
+            require_owner_access(context, owner_id)
+        tenant_id = context.tenant_id if isinstance(context, AuthContext) and context.authenticated else None
+
+        cached_graph = self.cache.get_graph(tenant_id, owner_id)
+        if cached_graph is not None:
+            security_audit("graph_cache_hit", "success", {"owner_id": owner_id})
+            return cached_graph
+
+        security_audit("graph_cache_miss", "info", {"owner_id": owner_id})
+        if load_network_fn is not None:
+            network_data = load_network_fn(owner_id, context)
+            if network_data is not None:
+                graph = build_graph_from_network(owner_id, network_data)
+                self.cache.set_graph(tenant_id, owner_id, graph)
+                security_audit("graph_rebuild", "completed", {"owner_id": owner_id, "nodes": graph.number_of_nodes()})
+                return graph
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No graph found for owner '{owner_id}'. "
+                "Import a network for this owner first."
+            )
+        )
+
+    def invalidate_owner_graph(
+        self,
+        owner_id: str,
+        auth_context: AuthContext | None = None,
+    ) -> None:
+        context = auth_context if isinstance(auth_context, AuthContext) else current_context()
+        tenant_id = context.tenant_id if isinstance(context, AuthContext) and context.authenticated else None
+        self.cache.invalidate(tenant_id, owner_id)
+        security_audit("graph_cache_invalidated", "completed", {"owner_id": owner_id})
+
+    def rebuild_owner_graph(
+        self,
+        owner_id: str,
+        network_data: dict[str, Any] | None,
+        auth_context: AuthContext | None = None,
+    ) -> nx.DiGraph | None:
+        context = auth_context if isinstance(auth_context, AuthContext) else current_context()
+        tenant_id = context.tenant_id if isinstance(context, AuthContext) and context.authenticated else None
+        if network_data is None:
+            self.cache.invalidate(tenant_id, owner_id)
+            return None
+        graph = build_graph_from_network(owner_id, network_data)
+        self.cache.set_graph(tenant_id, owner_id, graph)
+        security_audit("graph_rebuilt", "completed", {"owner_id": owner_id, "nodes": graph.number_of_nodes()})
+        return graph
+
+    def serialize_graph(self, owner_id: str, graph: nx.DiGraph) -> dict[str, Any]:
+        nodes = []
+        for node_id, attrs in graph.nodes(data=True):
+            nodes.append({"id": node_id, **attrs})
+
+        edges = []
+        for source, target, attrs in graph.edges(data=True):
+            edges.append({"source": source, "target": target, **attrs})
+
+        return {
+            "owner_id": owner_id,
+            "nodes": nodes,
+            "edges": edges,
+        }
+
+    def find_paths(
+        self,
+        owner_id: str,
+        source_id: str,
+        target_id: str,
+        cutoff: int = 4,
+        auth_context: AuthContext | None = None,
+        load_network_fn: Callable[[str, AuthContext | None], dict[str, Any] | None] | None = None,
+    ) -> dict[str, Any]:
+        start_time = time.perf_counter()
+        graph = self.get_owner_graph(owner_id, auth_context, load_network_fn)
+
+        if source_id not in graph:
+            raise HTTPException(
+                status_code=404,
+                detail="Source node not found."
+            )
+
+        if target_id not in graph:
+            raise HTTPException(
+                status_code=404,
+                detail="Target node not found."
+            )
+
+        effective_cutoff = min(max(cutoff, 0), 4)
+
+        try:
+            raw_paths = list(
+                nx.all_simple_paths(
+                    graph,
+                    source_id,
+                    target_id,
+                    cutoff=effective_cutoff
+                )
+            )
+        except nx.NetworkXNoPath:
+            raw_paths = []
+
+        reference_date = graph_recency_reference_date(graph)
+        scored_paths = [
+            score_path(graph, path, reference_date)
+            for path in raw_paths
+        ]
+        ranked = rank_paths(scored_paths)
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+        security_audit("path_search_executed", "completed", {
+            "owner_id": owner_id,
+            "paths_found": len(ranked),
+            "duration_ms": duration_ms,
+        })
+
+        return {
+            "owner_id": owner_id,
+            "source": source_id,
+            "target": target_id,
+            "paths": ranked[:3],
+        }
+
+    def explain_path(
+        self,
+        owner_id: str,
+        path: list[str] | None = None,
+        source_id: str | None = None,
+        target_id: str | None = None,
+        cutoff: int = 4,
+        auth_context: AuthContext | None = None,
+        load_network_fn: Callable[[str, AuthContext | None], dict[str, Any] | None] | None = None,
+    ) -> dict[str, Any]:
+        if not path:
+            effective_source = source_id or owner_id
+            if not target_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="target_id is required"
+                )
+
+            path_result = self.find_paths(
+                owner_id=owner_id,
+                source_id=effective_source,
+                target_id=target_id,
+                cutoff=cutoff,
+                auth_context=auth_context,
+                load_network_fn=load_network_fn,
+            )
+
+            paths = path_result.get("paths") or []
+            if not paths:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No warm path found"
+                )
+
+            best_path = paths[0]
+            path = best_path.get("path") or []
+
+        if len(path) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="A valid path must contain at least two nodes"
+            )
+
+        graph = self.get_owner_graph(owner_id, auth_context, load_network_fn)
+        statements = []
+
+        for source, target in zip(path, path[1:]):
+            edge = graph.get_edge_data(source, target)
+            if not edge:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Path edge not found: {source} -> {target}"
+                )
+
+            if edge.get("relationship") == "KNOWS":
+                statements.append(
+                    f"{source} is directly connected to {target}."
+                )
+            elif edge.get("relationship") == "OBSERVED_MUTUAL":
+                mutual_name = (
+                    edge.get("mutual_connection_name")
+                    or source
+                )
+                statements.append(
+                    f"{mutual_name} appears as a mutual connection for {target}."
+                )
+            else:
+                statements.append(
+                    f"{source} has observed relationship evidence for {target}."
+                )
+
+        hop_count = len(path) - 1
+        explanation = " ".join(statements)
+        explanation += f" This produces a {hop_count}-hop warm path."
+
+        return {
+            "owner_id": owner_id,
+            "path": path,
+            "hops": hop_count,
+            "explanation": explanation,
+        }
+
+    def generate_graph_html(self, graph: nx.DiGraph) -> str | None:
+        if Network is None:
+            return None
+
+        net = Network(
+            height="800px",
+            width="100%",
+            directed=True
+        )
+
+        for node_id, attrs in graph.nodes(data=True):
+            label = attrs.get("label", node_id)
+            net.add_node(
+                node_id,
+                label=label,
+                title=str(attrs)
+            )
+
+        for source, target, attrs in graph.edges(data=True):
+            relationship = attrs.get("relationship", "KNOWS")
+            strength = attrs.get("strength", 1.0)
+            net.add_edge(
+                source,
+                target,
+                label=relationship,
+                value=strength,
+                title=str(attrs)
+            )
+
+        return net.generate_html()
