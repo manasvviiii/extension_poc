@@ -247,8 +247,33 @@
   <div class="section">
     <div class="section-title">1. Extract visible data</div>
 
+    <button id="loadConnections" style="background:#0A66C2; color:white; border-color:#0A66C2;">
+      Load Connections
+    </button>
+
+    <div id="progressiveContainer" style="display:none; margin-bottom:10px; padding:10px; border:1px solid #0A66C2; border-radius:6px; background:#f0f7ff;">
+      <div id="progressiveStatusTitle" style="font-weight:700; color:#0A66C2; font-size:12px; margin-bottom:4px;">
+        Loading connections...
+      </div>
+      <div id="progressiveInstruction" style="font-size:11px; color:#555; margin-bottom:8px;">
+        Scroll through your connections to continue loading.
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:12px;">
+        <span id="progressiveCount" style="font-weight:700;">Connections collected: 0</span>
+        <span id="progressiveBadge" style="font-size:11px; color:#2e7d32; font-weight:600; display:none;">+0 new</span>
+      </div>
+
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button id="btnPause" style="flex:1; margin-bottom:0; font-size:11px; padding:6px 8px;">Pause</button>
+        <button id="btnResume" style="flex:1; margin-bottom:0; font-size:11px; padding:6px 8px; display:none;">Resume</button>
+        <button id="btnFinish" style="flex:1; margin-bottom:0; font-size:11px; padding:6px 8px; background:#111; color:white; border-color:#111;">Finish Loading</button>
+        <button id="btnCancel" style="flex:1; margin-bottom:0; font-size:11px; padding:6px 8px; background:#fff; color:#c62828; border-color:#e57373;">Cancel</button>
+      </div>
+    </div>
+
     <button id="extract">
-      Extract LinkedIn Data
+      Extract LinkedIn Data (One-shot)
     </button>
 
     <button id="send">

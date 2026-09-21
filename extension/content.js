@@ -1187,81 +1187,297 @@ function scanAndMaybeSync() {
 
 
 // =========================================================
+// PROGRESSIVE COLLECTION SESSION
+// =========================================================
+
+let progressiveSession = {
+  state: "idle", // "idle" | "collecting" | "paused" | "finished"
+  connections: new Map(),
+  relationshipEvidence: new Map(),
+  lastBatchNewConnections: 0,
+  lastBatchNewEvidence: 0
+};
+
+let progressiveObserver = null;
+let progressiveDebounceTimer = null;
+
+function getDeduplicationKey(record) {
+  if (record.profile_url) {
+    const norm = normalizeProfileUrl(record.profile_url);
+    if (norm) return `url:${norm}`;
+  }
+  if (record.provider_id || record.profile_id) {
+    return `id:${record.provider_id || record.profile_id}`;
+  }
+  const normName = normalizeNameForComparison(record.name);
+  const fallbackUrl = record.profile_url ? (normalizeProfileUrl(record.profile_url) || "") : "";
+  return `name:${normName}|${fallbackUrl}`;
+}
+
+function extractTotalConnectionsFromDom() {
+  try {
+    const text = document.body ? (document.body.innerText || document.body.textContent || "") : "";
+    const match = text.match(/Connections?\s*\(\s*([\d,.]+)\s*\)/i) ||
+                  text.match(/\b([\d,.]+)\s+connections?\b/i);
+    if (match) {
+      const num = parseInt(match[1].replace(/,/g, ""), 10);
+      if (!isNaN(num) && num > 0) {
+        return num;
+      }
+    }
+  } catch (e) {
+    // ignore DOM parsing errors
+  }
+  return null;
+}
+
+function scanProgressiveBatch() {
+  if (progressiveSession.state !== "collecting") {
+    return {
+      new_connections: 0,
+      new_evidence: 0,
+      total_connections: progressiveSession.connections.size,
+      total_evidence: progressiveSession.relationshipEvidence.size
+    };
+  }
+
+  let newConnections = 0;
+  let newEvidence = 0;
+
+  for (const anchor of document.querySelectorAll('a[href*="/in/"]')) {
+    const profileUrl = normalizeProfileUrl(anchor.href);
+    if (!profileUrl) continue;
+
+    const card = getCardRoot(anchor);
+    if (!card) continue;
+
+    const profileAnchor = getProfileAnchor(card);
+    if (!profileAnchor || profileAnchor.profile_url !== profileUrl) continue;
+
+    const firstDegree = extractFirstDegreeCard(card, profileAnchor);
+    if (firstDegree) {
+      const key = getDeduplicationKey(firstDegree);
+      const existing = progressiveSession.connections.get(key);
+      progressiveSession.connections.set(key, mergeRecord(existing || {}, firstDegree));
+      if (!existing) {
+        newConnections++;
+      }
+      continue;
+    }
+
+    const evidence = extractRelationshipEvidence(card, profileAnchor);
+    if (evidence) {
+      const key = `${getDeduplicationKey(evidence)}|${evidence.observed_degree}`;
+      const existing = progressiveSession.relationshipEvidence.get(key);
+      progressiveSession.relationshipEvidence.set(key, mergeRecord(existing || {}, evidence));
+      if (!existing) {
+        newEvidence++;
+      }
+    }
+  }
+
+  progressiveSession.lastBatchNewConnections = newConnections;
+  progressiveSession.lastBatchNewEvidence = newEvidence;
+
+  return {
+    new_connections: newConnections,
+    new_evidence: newEvidence,
+    total_connections: progressiveSession.connections.size,
+    total_evidence: progressiveSession.relationshipEvidence.size
+  };
+}
+
+function startProgressiveCollection() {
+  if (!progressiveObserver) {
+    progressiveObserver = new MutationObserver((mutations) => {
+      if (progressiveSession.state !== "collecting") return;
+      if (!mutations.some((m) => m.addedNodes.length > 0)) return;
+
+      if (progressiveDebounceTimer) clearTimeout(progressiveDebounceTimer);
+      progressiveDebounceTimer = setTimeout(() => {
+        scanProgressiveBatch();
+      }, 500);
+    });
+  }
+
+  progressiveSession.state = "collecting";
+  try {
+    progressiveObserver.observe(document.documentElement || document.body, {
+      childList: true,
+      subtree: true
+    });
+  } catch (e) {
+    // Ignore observer setup error in headless or virtual contexts
+  }
+
+  return scanProgressiveBatch();
+}
+
+function pauseProgressiveCollection() {
+  if (progressiveObserver) {
+    progressiveObserver.disconnect();
+  }
+  if (progressiveDebounceTimer) {
+    clearTimeout(progressiveDebounceTimer);
+    progressiveDebounceTimer = null;
+  }
+  progressiveSession.state = "paused";
+  return {
+    success: true,
+    total_connections: progressiveSession.connections.size,
+    total_evidence: progressiveSession.relationshipEvidence.size
+  };
+}
+
+function resumeProgressiveCollection() {
+  return startProgressiveCollection();
+}
+
+function finishProgressiveCollection() {
+  if (progressiveObserver) {
+    progressiveObserver.disconnect();
+  }
+  if (progressiveDebounceTimer) {
+    clearTimeout(progressiveDebounceTimer);
+    progressiveDebounceTimer = null;
+  }
+  progressiveSession.state = "idle";
+  const result = {
+    success: true,
+    page_type: getPageType(),
+    page_url: window.location.href,
+    first_degree_count: progressiveSession.connections.size,
+    relationship_evidence_count: progressiveSession.relationshipEvidence.size,
+    connections: Array.from(progressiveSession.connections.values()),
+    relationship_evidence: Array.from(progressiveSession.relationshipEvidence.values()),
+    reliable_dom_total: extractTotalConnectionsFromDom()
+  };
+  return result;
+}
+
+function cancelProgressiveCollection() {
+  if (progressiveObserver) {
+    progressiveObserver.disconnect();
+  }
+  if (progressiveDebounceTimer) {
+    clearTimeout(progressiveDebounceTimer);
+    progressiveDebounceTimer = null;
+  }
+  progressiveSession.state = "idle";
+  progressiveSession.connections.clear();
+  progressiveSession.relationshipEvidence.clear();
+  progressiveSession.lastBatchNewConnections = 0;
+  progressiveSession.lastBatchNewEvidence = 0;
+  return { success: true };
+}
+
+function getProgressiveStatus() {
+  return {
+    state: progressiveSession.state,
+    first_degree_count: progressiveSession.connections.size,
+    relationship_evidence_count: progressiveSession.relationshipEvidence.size,
+    last_batch_new_connections: progressiveSession.lastBatchNewConnections,
+    last_batch_new_evidence: progressiveSession.lastBatchNewEvidence,
+    connections: Array.from(progressiveSession.connections.values()),
+    relationship_evidence: Array.from(progressiveSession.relationshipEvidence.values()),
+    reliable_dom_total: extractTotalConnectionsFromDom()
+  };
+}
+
+window.addEventListener("beforeunload", () => {
+  if (progressiveObserver) {
+    progressiveObserver.disconnect();
+  }
+  if (progressiveDebounceTimer) {
+    clearTimeout(progressiveDebounceTimer);
+  }
+});
+
+
+// =========================================================
 // POPUP MESSAGE HANDLER
 // =========================================================
 
-chrome.runtime.onMessage.addListener(
-  (
-    message,
-    sender,
-    sendResponse
-  ) => {
-
-    if (
-      message.action !==
-      "extractLinkedIn"
-    ) {
-      return;
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  try {
+    switch (message.action) {
+      case "startCollection": {
+        cancelProgressiveCollection();
+        const res = startProgressiveCollection();
+        sendResponse({
+          success: true,
+          status: getProgressiveStatus(),
+          batch: res
+        });
+        break;
+      }
+      case "pauseCollection": {
+        pauseProgressiveCollection();
+        sendResponse({
+          success: true,
+          status: getProgressiveStatus()
+        });
+        break;
+      }
+      case "resumeCollection": {
+        const res = resumeProgressiveCollection();
+        sendResponse({
+          success: true,
+          status: getProgressiveStatus(),
+          batch: res
+        });
+        break;
+      }
+      case "finishCollection": {
+        const res = finishProgressiveCollection();
+        sendResponse({
+          success: true,
+          data: res,
+          status: getProgressiveStatus()
+        });
+        break;
+      }
+      case "cancelCollection": {
+        cancelProgressiveCollection();
+        sendResponse({
+          success: true,
+          status: getProgressiveStatus()
+        });
+        break;
+      }
+      case "getCollectionStatus": {
+        sendResponse({
+          success: true,
+          status: getProgressiveStatus()
+        });
+        break;
+      }
+      case "extractLinkedIn": {
+        const result = scanAndMaybeSync();
+        sendResponse({
+          success: true,
+          page_type: getPageType(),
+          page_url: window.location.href,
+          first_degree_count: connectionStore.size,
+          relationship_evidence_count: relationshipEvidenceStore.size,
+          batch_added: result.first_degree_added,
+          relationship_evidence_added: result.relationship_evidence_added,
+          connections: Array.from(connectionStore.values()),
+          relationship_evidence: Array.from(relationshipEvidenceStore.values())
+        });
+        break;
+      }
+      default:
+        return false;
     }
-
-
-    try {
-
-      const result =
-        scanAndMaybeSync();
-
-
-      sendResponse({
-
-        success:
-          true,
-
-        page_type:
-          getPageType(),
-
-        page_url:
-          window.location.href,
-
-        first_degree_count:
-          connectionStore.size,
-
-        relationship_evidence_count:
-          relationshipEvidenceStore.size,
-
-        batch_added:
-          result.first_degree_added,
-
-        relationship_evidence_added:
-          result.relationship_evidence_added,
-
-        connections:
-          Array.from(
-            connectionStore.values()
-          ),
-
-        relationship_evidence:
-          Array.from(
-            relationshipEvidenceStore.values()
-          )
-
-      });
-
-    } catch (error) {
-
-      sendResponse({
-        success:
-          false,
-
-        error:
-          error.message
-      });
-
-    }
-
-
-    return true;
+  } catch (error) {
+    sendResponse({
+      success: false,
+      error: error.message
+    });
   }
-);
+  return true;
+});
 
 
 // =========================================================
@@ -1301,13 +1517,17 @@ const observer =
   );
 
 
-observer.observe(
-  document.documentElement,
-  {
-    childList: true,
-    subtree: true
-  }
-);
+try {
+  observer.observe(
+    document.documentElement,
+    {
+      childList: true,
+      subtree: true
+    }
+  );
+} catch (e) {
+  // Ignore observer error in virtual environment
+}
 
 
 // Initial scan so the content store

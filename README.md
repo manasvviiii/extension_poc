@@ -24,6 +24,10 @@ uvicorn main:app --reload --port 8000
 
 Expected: Imported 3 connections. Owner: banker_A
 
+### Progressive Connection Loading
+Connections are progressively collected while the user manually scrolls through the connections page. The extension deduplicates connections during the session. The user reviews the collected records and explicitly confirms before sharing them with the backend.
+
+
 ## PostgreSQL persistence (Phase 2)
 
 The MVP JSON files remain available as the explicit compatibility backend for

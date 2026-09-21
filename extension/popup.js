@@ -422,6 +422,230 @@ function renderExtractionPreview(response) {
 
 
 /* =========================================================
+   PROGRESSIVE CONNECTION LOADING
+========================================================= */
+
+const loadConnectionsBtn = document.getElementById("loadConnections");
+const progressiveContainer = document.getElementById("progressiveContainer");
+const progressiveStatusTitle = document.getElementById("progressiveStatusTitle");
+const progressiveInstruction = document.getElementById("progressiveInstruction");
+const progressiveCountEl = document.getElementById("progressiveCount");
+const progressiveBadgeEl = document.getElementById("progressiveBadge");
+
+const btnPause = document.getElementById("btnPause");
+const btnResume = document.getElementById("btnResume");
+const btnFinish = document.getElementById("btnFinish");
+const btnCancel = document.getElementById("btnCancel");
+
+let statusPollInterval = null;
+
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
+}
+
+function sendTabMessage(action, payload = {}) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const tab = await getActiveTab();
+      if (!tab || !tab.id) {
+        return reject(new Error("No active tab found. Please open a LinkedIn page."));
+      }
+      chrome.tabs.sendMessage(tab.id, { action, ...payload }, (response) => {
+        if (chrome.runtime.lastError) {
+          return reject(new Error("Could not connect to page context. Make sure you are on LinkedIn or synthetic test page."));
+        }
+        if (!response) {
+          return reject(new Error("No response from page."));
+        }
+        if (!response.success) {
+          return reject(new Error(response.error || "Action failed."));
+        }
+        resolve(response);
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function updateProgressiveUI(status) {
+  if (!status) return;
+
+  const state = status.state;
+  if (state === "collecting" || state === "paused") {
+    if (progressiveContainer) progressiveContainer.style.display = "block";
+    if (loadConnectionsBtn) loadConnectionsBtn.style.display = "none";
+
+    if (state === "collecting") {
+      if (progressiveStatusTitle) progressiveStatusTitle.textContent = "Loading connections...";
+      if (progressiveInstruction) progressiveInstruction.textContent = "Scroll through your connections to continue loading.";
+      if (btnPause) btnPause.style.display = "inline-block";
+      if (btnResume) btnResume.style.display = "none";
+    } else {
+      if (progressiveStatusTitle) progressiveStatusTitle.textContent = "Collection paused";
+      if (progressiveInstruction) progressiveInstruction.textContent = "Click Resume to continue loading connections while scrolling.";
+      if (btnPause) btnPause.style.display = "none";
+      if (btnResume) btnResume.style.display = "inline-block";
+    }
+
+    if (progressiveCountEl) {
+      if (status.reliable_dom_total) {
+        progressiveCountEl.textContent = `Connections collected: ${status.first_degree_count} / ~${status.reliable_dom_total}`;
+      } else {
+        progressiveCountEl.textContent = `Connections collected: ${status.first_degree_count}`;
+      }
+    }
+
+    if (progressiveBadgeEl) {
+      if (status.last_batch_new_connections > 0) {
+        progressiveBadgeEl.style.display = "inline";
+        progressiveBadgeEl.textContent = `+${status.last_batch_new_connections} new`;
+      } else {
+        progressiveBadgeEl.style.display = "none";
+      }
+    }
+  } else {
+    if (progressiveContainer) progressiveContainer.style.display = "none";
+    if (loadConnectionsBtn) loadConnectionsBtn.style.display = "block";
+    stopStatusPolling();
+  }
+}
+
+function startStatusPolling() {
+  stopStatusPolling();
+  statusPollInterval = setInterval(async () => {
+    try {
+      const res = await sendTabMessage("getCollectionStatus");
+      updateProgressiveUI(res.status);
+    } catch (e) {
+      stopStatusPolling();
+    }
+  }, 1000);
+}
+
+function stopStatusPolling() {
+  if (statusPollInterval) {
+    clearInterval(statusPollInterval);
+    statusPollInterval = null;
+  }
+}
+
+// Sync status when popup opens
+(async () => {
+  try {
+    const res = await sendTabMessage("getCollectionStatus");
+    if (res && res.status && (res.status.state === "collecting" || res.status.state === "paused")) {
+      updateProgressiveUI(res.status);
+      if (res.status.state === "collecting") {
+        startStatusPolling();
+      }
+    }
+  } catch (e) {
+    // Page may not be active or content script not injected yet
+  }
+})();
+
+if (loadConnectionsBtn) {
+  loadConnectionsBtn.addEventListener("click", async () => {
+    try {
+      output.textContent = "Starting progressive collection...";
+      const res = await sendTabMessage("startCollection");
+      updateProgressiveUI(res.status);
+      startStatusPolling();
+      output.innerHTML = `
+        <div class="status-box">
+          <strong>Progressive Connection Collector Active</strong><br><br>
+          Scroll manually through your connections page.<br>
+          Newly rendered cards will be added and deduplicated automatically.
+        </div>
+      `;
+    } catch (error) {
+      output.textContent = "Could not start collection:\n\n" + error.message;
+    }
+  });
+}
+
+if (btnPause) {
+  btnPause.addEventListener("click", async () => {
+    try {
+      const res = await sendTabMessage("pauseCollection");
+      updateProgressiveUI(res.status);
+      stopStatusPolling();
+    } catch (error) {
+      output.textContent = "Could not pause collection:\n\n" + error.message;
+    }
+  });
+}
+
+if (btnResume) {
+  btnResume.addEventListener("click", async () => {
+    try {
+      const res = await sendTabMessage("resumeCollection");
+      updateProgressiveUI(res.status);
+      startStatusPolling();
+    } catch (error) {
+      output.textContent = "Could not resume collection:\n\n" + error.message;
+    }
+  });
+}
+
+if (btnFinish) {
+  btnFinish.addEventListener("click", async () => {
+    try {
+      stopStatusPolling();
+      const res = await sendTabMessage("finishCollection");
+      updateProgressiveUI({ state: "idle" });
+
+      if (res.data) {
+        latestData = res.data;
+        renderExtractionPreview(res.data);
+
+        const countNotice = document.createElement("div");
+        countNotice.className = "status-box";
+        countNotice.style.marginBottom = "10px";
+        countNotice.style.background = "#e8f4ea";
+        countNotice.style.borderColor = "#b6dcbc";
+        countNotice.style.color = "#1e4620";
+        countNotice.innerHTML = `<strong>Collection Finished:</strong> ${res.data.first_degree_count} unique connections collected. Review your data below before confirming.`;
+        if (output) {
+          output.insertBefore(countNotice, output.firstChild);
+        }
+      }
+    } catch (error) {
+      output.textContent = "Could not finish collection:\n\n" + error.message;
+    }
+  });
+}
+
+if (btnCancel) {
+  btnCancel.addEventListener("click", async () => {
+    try {
+      const statusRes = await sendTabMessage("getCollectionStatus");
+      const count = (statusRes.status && statusRes.status.first_degree_count) || 0;
+
+      if (count > 0) {
+        const confirmed = confirm(`Are you sure you want to discard your ${count} collected connections?`);
+        if (!confirmed) return;
+      }
+
+      stopStatusPolling();
+      await sendTabMessage("cancelCollection");
+      updateProgressiveUI({ state: "idle" });
+
+      output.innerHTML = `
+        <div class="status-box empty">
+          Collection cancelled. Session discarded.
+        </div>
+      `;
+    } catch (error) {
+      output.textContent = "Could not cancel collection:\n\n" + error.message;
+    }
+  });
+}
+
+
+/* =========================================================
    EXTRACT LINKEDIN DATA
 ========================================================= */
 

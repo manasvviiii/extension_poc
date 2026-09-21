@@ -153,6 +153,58 @@ class ExtensionIngestionTests(unittest.TestCase):
         evidence = main.get_relationship_evidence("owner-ext-1")
         self.assertEqual(evidence["count"], 1)
 
+    def test_progressive_payload_ingestion_with_multiple_connections(self):
+        progressive_payload = {
+            "owner_id": "owner-progressive-1",
+            "source": "linkedin_dom",
+            "confirmed": True,
+            "page_type": "linkedin_network",
+            "page_url": "https://www.linkedin.com/mynetwork/invite-connect/connections/",
+            "connections": [
+                {
+                    "name": "Person 1",
+                    "profile_url": "https://www.linkedin.com/in/person-1",
+                    "headline": "CEO at Corp 1",
+                    "degree": "1st",
+                    "connection_date": "Connected 2 days ago"
+                },
+                {
+                    "name": "Person 2",
+                    "profile_url": "https://www.linkedin.com/in/person-2",
+                    "headline": "CTO at Corp 2",
+                    "degree": "1st",
+                    "connection_date": "Connected 5 days ago"
+                }
+            ],
+            "relationship_evidence": []
+        }
+
+        result = main.import_network(main.ImportRequest(**progressive_payload))
+        self.assertTrue(result["success"])
+        self.assertEqual(result["connection_count"], 2)
+
+    def test_progressive_unconfirmed_payload_rejection(self):
+        unconfirmed_progressive = {
+            "owner_id": "owner-progressive-2",
+            "source": "linkedin_dom",
+            "confirmed": False,
+            "page_type": "linkedin_network",
+            "page_url": "https://www.linkedin.com/mynetwork/invite-connect/connections/",
+            "connections": [
+                {
+                    "name": "Person 1",
+                    "profile_url": "https://www.linkedin.com/in/person-1",
+                    "headline": "CEO at Corp 1",
+                    "degree": "1st"
+                }
+            ],
+            "relationship_evidence": []
+        }
+
+        with self.assertRaises(main.HTTPException) as ctx:
+            main.import_network(main.ImportRequest(**unconfirmed_progressive))
+        self.assertEqual(ctx.exception.status_code, 400)
+
     @unittest.skipUnless(DATABASE_TESTS_AVAILABLE, "SQLAlchemy required for database tests")
     def test_database_provider_ingestion_and_tenant_isolation(self):
         db_path = self.temp_dir / "ext_test.db"
