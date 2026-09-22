@@ -1,3 +1,10 @@
+let connectionsState = null;
+let acquisitionState = null;
+let targetSearchState = null;
+let selectedTargetState = null;
+let warmPathState = null;
+let explainPathState = null;
+
 let latestData = null;
 
 const BACKEND_BASE_URL =
@@ -5,6 +12,12 @@ const BACKEND_BASE_URL =
 
 const output =
   document.getElementById("output");
+const targetSearchResultsEl =
+  document.getElementById("targetSearchResults");
+const selectedTargetBadgeEl =
+  document.getElementById("selectedTargetBadge");
+const pathResultsEl =
+  document.getElementById("pathResults");
 
 
 /* =========================================================
@@ -31,6 +44,17 @@ function getStoredOwnerId() {
 
   });
 }
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 
 
 /* =========================================================
@@ -93,349 +117,164 @@ function escapeHtml(value) {
    EXTRACTION PREVIEW
 ========================================================= */
 
-function renderExtractionPreview(response) {
+function renderExtractionPreview(response, filterQuery) {
+  if (!response) return;
+  connectionsState = response;
+  latestData = response;
 
-  const connections =
-    response.connections || [];
+  let connections = response.connections || [];
+  const evidence = response.relationship_evidence || [];
 
-  const evidence =
-    response.relationship_evidence || [];
+  console.log("[EXTRACTION PREVIEW]", {
+    connectionsCount: connections.length,
+    previewRendered: true
+  });
 
+  const searchVal = filterQuery !== undefined 
+    ? filterQuery 
+    : (document.getElementById("searchConnectionsInput")?.value || "");
+
+  const query = searchVal.toLowerCase().trim();
+  if (query) {
+    connections = connections.filter(c => {
+      const name = (c.name || "").toLowerCase();
+      const headline = (c.headline || c.occupation || "").toLowerCase();
+      const degree = (c.degree || "").toLowerCase();
+      return name.includes(query) || headline.includes(query) || degree.includes(query);
+    });
+  }
+
+  const firstDegreeCount = response.first_degree_count !== undefined ? response.first_degree_count : (response.connections ? response.connections.length : 0);
+  const evidenceCount = response.relationship_evidence_count !== undefined ? response.relationship_evidence_count : evidence.length;
 
   let html = `
-
     <div class="summary">
-
       <div class="summary-card">
-
         <span class="summary-number">
-          ${response.first_degree_count}
+          ${firstDegreeCount}
         </span>
-
         <span class="summary-label">
           1st-degree
         </span>
-
       </div>
 
-
       <div class="summary-card">
-
         <span class="summary-number">
-          ${response.relationship_evidence_count}
+          ${evidenceCount}
         </span>
-
         <span class="summary-label">
           Evidence
         </span>
-
       </div>
-
     </div>
-
   `;
 
-
-  /* =======================================================
-     FIRST-DEGREE CONNECTIONS
-  ======================================================= */
-
   if (connections.length > 0) {
-
     html += `
-
       <div class="section-title">
-        Your Connections
+        Your Connections ${query ? `(Filtered: ${connections.length})` : ""}
       </div>
-
     `;
-
 
     connections.forEach((person) => {
-
       html += `
-
         <div class="record">
-
           <div class="record-name">
-            ${escapeHtml(
-              person.name ||
-              "Unknown person"
-            )}
+            ${escapeHtml(person.name || "Unknown person")}
           </div>
-
 
           <div class="record-headline">
-            ${escapeHtml(
-              person.headline ||
-              "No headline available"
-            )}
+            ${escapeHtml(person.headline || person.occupation || "No headline available")}
           </div>
-
 
           <div class="record-meta">
-
             <span class="badge">
-              ${escapeHtml(
-                person.degree ||
-                "1st"
-              )}
+              ${escapeHtml(person.degree || "1st")}
             </span>
-
-
-            ${
-              person.connection_date
-                ? `
-                  <span class="badge">
-                    Connected ${
-                      escapeHtml(
-                        person.connection_date
-                      )
-                    }
-                  </span>
-                `
-                : ""
-            }
-
+            ${person.connection_date ? `<span class="badge">Connected ${escapeHtml(person.connection_date)}</span>` : ""}
           </div>
 
-
-          ${
-            person.profile_url
-              ? `
-                <a
-                  class="record-link"
-                  href="${escapeHtml(
-                    person.profile_url
-                  )}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  ${escapeHtml(
-                    person.profile_url
-                  )}
-                </a>
-              `
-              : ""
-          }
-
+          ${person.profile_url ? `
+            <a class="record-link" href="${escapeHtml(person.profile_url)}" target="_blank" rel="noopener noreferrer">
+              ${escapeHtml(person.profile_url)}
+            </a>
+          ` : ""}
         </div>
-
       `;
-
     });
-
+  } else if (query) {
+    html += `
+      <div class="status-box empty">
+        No connections found matching "${escapeHtml(query)}".
+      </div>
+    `;
   }
-
-
-  /* =======================================================
-     RELATIONSHIP EVIDENCE
-  ======================================================= */
 
   if (evidence.length > 0) {
-
     html += `
-
-      <div
-        class="section-title"
-        style="margin-top:14px;"
-      >
+      <div class="section-title" style="margin-top:14px;">
         Relationship Evidence
       </div>
-
     `;
 
-
     evidence.forEach((item) => {
-
-      const mutualNames =
-        Array.isArray(
-          item.mutual_connection_names
-        )
-          ? item.mutual_connection_names
-          : [];
-
-
+      const mutualNames = Array.isArray(item.mutual_connection_names) ? item.mutual_connection_names : [];
       html += `
-
         <div class="record">
-
           <div class="record-name">
-            ${escapeHtml(
-              item.name ||
-              "Unknown person"
-            )}
+            ${escapeHtml(item.name || "Unknown person")}
           </div>
-
 
           <div class="record-headline">
-            ${escapeHtml(
-              item.headline ||
-              "No headline available"
-            )}
+            ${escapeHtml(item.headline || "No headline available")}
           </div>
-
 
           <div class="record-meta">
-
             <span class="badge">
-              ${escapeHtml(
-                item.observed_degree ||
-                "2nd"
-              )}
+              ${escapeHtml(item.observed_degree || "2nd")}
             </span>
-
             <span class="badge">
-              ${escapeHtml(
-                item.evidence_type ||
-                "relationship"
-              )}
+              ${escapeHtml(item.evidence_type || "relationship")}
             </span>
-
           </div>
 
-
-          ${
-            item.mutual_connections_text
-              ? `
-                <div class="mutual">
-
-                  <strong>
-                    Mutual:
-                  </strong>
-
-                  ${escapeHtml(
-                    item.mutual_connections_text
-                  )}
-
-                </div>
-              `
-              : ""
-          }
-
-
-          ${
-            mutualNames.length > 0
-              ? `
-                <div class="mutual">
-
-                  <strong>
-                    Connections:
-                  </strong>
-
-                  ${escapeHtml(
-                    mutualNames.join(", ")
-                  )}
-
-                </div>
-              `
-              : ""
-          }
-
-
-          ${
-            item.location
-              ? `
-                <div class="mutual">
-
-                  <strong>
-                    Location:
-                  </strong>
-
-                  ${escapeHtml(
-                    item.location
-                  )}
-
-                </div>
-              `
-              : ""
-          }
-
-
-          ${
-            item.followers
-              ? `
-                <div class="mutual">
-
-                  <strong>
-                    Followers:
-                  </strong>
-
-                  ${escapeHtml(
-                    item.followers
-                  )}
-
-                </div>
-              `
-              : ""
-          }
-
-
-          ${
-            item.profile_url
-              ? `
-                <a
-                  class="record-link"
-                  href="${escapeHtml(
-                    item.profile_url
-                  )}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  ${escapeHtml(
-                    item.profile_url
-                  )}
-                </a>
-              `
-              : ""
-          }
-
+          ${item.mutual_connections_text ? `<div class="mutual"><strong>Mutual:</strong> ${escapeHtml(item.mutual_connections_text)}</div>` : ""}
+          ${mutualNames.length > 0 ? `<div class="mutual"><strong>Connections:</strong> ${escapeHtml(mutualNames.join(", "))}</div>` : ""}
+          ${item.location ? `<div class="mutual"><strong>Location:</strong> ${escapeHtml(item.location)}</div>` : ""}
+          ${item.followers ? `<div class="mutual"><strong>Followers:</strong> ${escapeHtml(item.followers)}</div>` : ""}
+          ${item.profile_url ? `<a class="record-link" href="${escapeHtml(item.profile_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.profile_url)}</a>` : ""}
         </div>
-
       `;
-
     });
-
   }
 
-
-  if (
-    connections.length === 0 &&
-    evidence.length === 0
-  ) {
-
+  if (connections.length === 0 && evidence.length === 0 && !query) {
     html += `
-
       <div class="status-box empty">
         No relationship data found on this page.
       </div>
-
     `;
-
   }
 
-
-  output.innerHTML =
-    html;
-
+  const outputEl = document.getElementById("output");
+  if (outputEl) {
+    outputEl.innerHTML = html;
+  }
 }
 
 
 /* =========================================================
-   PROGRESSIVE CONNECTION LOADING
+   AUTOMATED CONNECTION ACQUISITION (PASSIVE MONITORING)
 ========================================================= */
 
-const loadConnectionsBtn = document.getElementById("loadConnections");
-const progressiveContainer = document.getElementById("progressiveContainer");
-const progressiveStatusTitle = document.getElementById("progressiveStatusTitle");
-const progressiveInstruction = document.getElementById("progressiveInstruction");
-const progressiveCountEl = document.getElementById("progressiveCount");
-const progressiveBadgeEl = document.getElementById("progressiveBadge");
-
-const btnPause = document.getElementById("btnPause");
-const btnResume = document.getElementById("btnResume");
-const btnFinish = document.getElementById("btnFinish");
-const btnCancel = document.getElementById("btnCancel");
+const acquisitionContainer = document.getElementById("acquisitionContainer");
+const acquisitionStatusTitle = document.getElementById("acquisitionStatusTitle");
+const acquisitionInstruction = document.getElementById("acquisitionInstruction");
+const acquisitionExpectedEl = document.getElementById("acquisitionExpected");
+const acquisitionCountEl = document.getElementById("acquisitionCount");
+const acquisitionRemainingEl = document.getElementById("acquisitionRemaining");
+const acquisitionEvidenceCountEl = document.getElementById("acquisitionEvidenceCount");
+const syncStatusBadgeEl = document.getElementById("syncStatusBadge");
 
 let statusPollInterval = null;
 
@@ -449,7 +288,7 @@ function sendTabMessage(action, payload = {}) {
     try {
       const tab = await getActiveTab();
       if (!tab || !tab.id) {
-        return reject(new Error("No active tab found. Please open a LinkedIn page."));
+        return reject(new Error("No active tab found. Please open a LinkedIn page or mock connections page."));
       }
       chrome.tabs.sendMessage(tab.id, { action, ...payload }, (response) => {
         if (chrome.runtime.lastError) {
@@ -469,46 +308,250 @@ function sendTabMessage(action, payload = {}) {
   });
 }
 
-function updateProgressiveUI(status) {
+function updateAcquisitionDashboard(status) {
   if (!status) return;
 
   const state = status.state;
-  if (state === "collecting" || state === "paused") {
-    if (progressiveContainer) progressiveContainer.style.display = "block";
-    if (loadConnectionsBtn) loadConnectionsBtn.style.display = "none";
+  const collected = status.collected_count !== undefined ? status.collected_count : (status.connections ? status.connections.length : 0);
+  const expected = status.expected_total || status.reliable_dom_total || 0;
+  const missing = Math.max(0, expected - collected);
 
-    if (state === "collecting") {
-      if (progressiveStatusTitle) progressiveStatusTitle.textContent = "Loading connections...";
-      if (progressiveInstruction) progressiveInstruction.textContent = "Scroll through your connections to continue loading.";
-      if (btnPause) btnPause.style.display = "inline-block";
-      if (btnResume) btnResume.style.display = "none";
+  const titleEl = document.getElementById("acquisitionStatusTitle");
+  const countDisplayEl = document.getElementById("acquisitionCountDisplay");
+  const instructionEl = document.getElementById("acquisitionInstruction");
+  const syncBadgeEl = document.getElementById("syncStatusBadge");
+  const progressBarEl = document.getElementById("acquisitionProgressBar");
+  const remainingEl = document.getElementById("acquisitionRemainingText");
+  const syncNetworkBtn = document.getElementById("syncNetworkBtn");
+
+  const completionStatus = status.completion_status || (state === "completed" ? (collected >= expected ? "complete" : "complete_rendered_dataset") : "incomplete");
+  const syncState = status.sync_status || "idle";
+
+  const pct = expected > 0 ? Math.min(100, Math.round((collected / expected) * 100)) : (collected > 0 ? 100 : 0);
+
+  if (progressBarEl) {
+    progressBarEl.style.width = `${pct}%`;
+  }
+
+  if (remainingEl) {
+    if (expected > 0) {
+      remainingEl.textContent = missing > 0 ? `${missing} connection${missing > 1 ? 's' : ''} remaining (${pct}%)` : `All ${collected} connections collected (100%)`;
     } else {
-      if (progressiveStatusTitle) progressiveStatusTitle.textContent = "Collection paused";
-      if (progressiveInstruction) progressiveInstruction.textContent = "Click Resume to continue loading connections while scrolling.";
-      if (btnPause) btnPause.style.display = "none";
-      if (btnResume) btnResume.style.display = "inline-block";
+      remainingEl.textContent = `${collected} connections collected`;
+    }
+  }
+
+  const isReadyToSync = (completionStatus === "complete" || completionStatus === "complete_rendered_dataset" || (state === "completed" && collected >= expected - 1));
+
+  if (syncNetworkBtn) {
+    if (isReadyToSync && syncState !== "synced") {
+      syncNetworkBtn.style.display = "inline-block";
+      if (syncState === "syncing") {
+        syncNetworkBtn.disabled = true;
+        syncNetworkBtn.textContent = "Syncing...";
+      } else {
+        syncNetworkBtn.disabled = false;
+        syncNetworkBtn.textContent = "Sync Network";
+      }
+    } else {
+      syncNetworkBtn.style.display = "none";
     }
 
-    if (progressiveCountEl) {
-      if (status.reliable_dom_total) {
-        progressiveCountEl.textContent = `Connections collected: ${status.first_degree_count} / ~${status.reliable_dom_total}`;
+    if (!syncNetworkBtn._hasInitListener) {
+      syncNetworkBtn._hasInitListener = true;
+      syncNetworkBtn.addEventListener("click", async () => {
+        try {
+          syncNetworkBtn.disabled = true;
+          syncNetworkBtn.textContent = "Syncing...";
+          const res = await sendTabMessage("syncToBackend");
+          if (res && res.success) {
+            syncNetworkBtn.textContent = "Synced ✓";
+            syncNetworkBtn.disabled = true;
+            if (syncBadgeEl) {
+              syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">✓ ${collected} connections synced</span>`;
+            }
+          } else {
+            syncNetworkBtn.disabled = false;
+            syncNetworkBtn.textContent = "Retry Sync";
+            alert("Sync failed: " + ((res && (res.sync_message || res.error)) || "Unknown error"));
+          }
+        } catch (err) {
+          syncNetworkBtn.disabled = false;
+          syncNetworkBtn.textContent = "Retry Sync";
+          alert("Sync error: " + err.message);
+        }
+      });
+    }
+  }
+
+  if (state === "acquiring") {
+    if (titleEl) {
+      titleEl.innerHTML = `<span style="color:#0A66C2;">● Collecting connections...</span>`;
+    }
+    if (countDisplayEl) {
+      countDisplayEl.textContent = `${collected} / ${expected}`;
+    }
+    if (instructionEl) {
+      instructionEl.textContent = status.status_message || "Acquiring connection records from page...";
+    }
+    if (syncBadgeEl) {
+      syncBadgeEl.innerHTML = `<span style="color:#0A66C2;">Backend Sync: Pending</span>`;
+    }
+  } else if (completionStatus === "complete_rendered_dataset" || (state === "completed" && collected === expected - 1)) {
+    if (titleEl) {
+      titleEl.innerHTML = `<span style="color:#2e7d32;">✓ All available connections extracted</span>`;
+    }
+    if (countDisplayEl) {
+      countDisplayEl.textContent = `${collected} connections`;
+    }
+    if (instructionEl) {
+      instructionEl.innerHTML = `LinkedIn reports ${expected} connections; ${collected} were available in the rendered list.`;
+    }
+    if (syncBadgeEl) {
+      if (syncState === "synced") {
+        syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">✓ ${collected} connections synced</span>`;
+      } else if (syncState === "syncing") {
+        syncBadgeEl.innerHTML = `<span style="color:#0A66C2;">Backend Sync: Syncing...</span>`;
       } else {
-        progressiveCountEl.textContent = `Connections collected: ${status.first_degree_count}`;
+        syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">Backend Sync: Ready</span>`;
       }
     }
-
-    if (progressiveBadgeEl) {
-      if (status.last_batch_new_connections > 0) {
-        progressiveBadgeEl.style.display = "inline";
-        progressiveBadgeEl.textContent = `+${status.last_batch_new_connections} new`;
+  } else if (completionStatus === "complete" || (state === "completed" && collected >= expected)) {
+    if (titleEl) {
+      titleEl.innerHTML = `<span style="color:#2e7d32;">✓ Connections</span>`;
+    }
+    if (countDisplayEl) {
+      countDisplayEl.textContent = `${collected} connections`;
+    }
+    if (instructionEl) {
+      instructionEl.innerHTML = `<span style="color:#2e7d32; font-weight:600;">✓ All connections collected</span>`;
+    }
+    if (syncBadgeEl) {
+      if (syncState === "synced") {
+        syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">✓ ${collected} connections synced</span>`;
+      } else if (syncState === "syncing") {
+        syncBadgeEl.innerHTML = `<span style="color:#0A66C2;">Backend Sync: Syncing...</span>`;
       } else {
-        progressiveBadgeEl.style.display = "none";
+        syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">Backend Sync: Ready</span>`;
       }
+    }
+  } else if (state === "incomplete" || state === "unsupported") {
+    if (titleEl) {
+      titleEl.innerHTML = `<span style="color:#c62828;">⚠️ Connections</span>`;
+    }
+    if (countDisplayEl) {
+      countDisplayEl.textContent = `${collected} / ${expected} connections`;
+    }
+    if (instructionEl) {
+      const detailStr = missing > 0
+        ? `${missing} connection${missing > 1 ? 's are' : ' is'} unavailable from the rendered page.`
+        : "";
+      instructionEl.innerHTML = `<strong>✓ ${collected} connections extracted</strong><br><span style="color:#c62828;">${detailStr}</span>`;
+    }
+    if (syncBadgeEl) {
+      syncBadgeEl.innerHTML = `<span style="color:#c62828;">Sync unavailable until the dataset is complete</span>`;
     }
   } else {
-    if (progressiveContainer) progressiveContainer.style.display = "none";
-    if (loadConnectionsBtn) loadConnectionsBtn.style.display = "block";
-    stopStatusPolling();
+    if (titleEl) {
+      titleEl.innerHTML = `<span style="color:#666;">Connections Idle</span>`;
+    }
+    if (countDisplayEl) {
+      countDisplayEl.textContent = `${collected} / ${expected} connections`;
+    }
+    if (instructionEl) {
+      instructionEl.textContent = "Open LinkedIn connections page to acquire dataset.";
+    }
+    if (syncBadgeEl) {
+      syncBadgeEl.innerHTML = `<span style="color:#666;">Backend Sync: Pending</span>`;
+    }
+  }
+
+  // Live search listener on search input
+  const searchInput = document.getElementById("searchConnectionsInput");
+  if (searchInput && !searchInput._hasInitListener) {
+    searchInput._hasInitListener = true;
+    searchInput.addEventListener("input", (e) => {
+      if (latestData) {
+        renderExtractionPreview(latestData, e.target.value);
+      }
+    });
+  }
+
+  // Debug mode toggle listener initialization
+  const toggleBtn = document.getElementById("toggleDebugTelemetryBtn");
+  const diagEl = document.getElementById("telemetryDiagnostics");
+  if (toggleBtn && !toggleBtn._hasInitListener) {
+    toggleBtn._hasInitListener = true;
+    toggleBtn.addEventListener("click", () => {
+      if (diagEl.style.display === "none" || !diagEl.style.display) {
+        diagEl.style.display = "block";
+        toggleBtn.textContent = "[Hide Debug Mode]";
+      } else {
+        diagEl.style.display = "none";
+        toggleBtn.textContent = "[Debug Mode]";
+      }
+    });
+  }
+
+  if (diagEl) {
+    let text = "";
+    if (status.telemetry) {
+      const t = status.telemetry;
+      text += `[EXTRACTION TELEMETRY]\n` +
+        `Profile Links Found: ${t.dom_card_count || 0}\n` +
+        `Containers Inspected: ${t.containers_inspected || 0}\n` +
+        `Successfully Extracted: ${t.extracted_records || 0} | Failed: ${t.failed_extraction || 0}\n` +
+        `Previously Known: ${t.previously_known || 0} | New Unique: +${t.new_unique || 0}\n` +
+        `Total Collected: ${t.collected_total || 0}\n\n` +
+        `[LAST ACTION]\n` +
+        `Attempt: #${t.attempt_number || 1} | Method: ${t.trigger_method || "none"}\n` +
+        `Target Container: ${t.scroll_container_description || "none"}\n` +
+        `scrollTop: ${t.scroll_top_before || 0} → ${t.scroll_top_after || 0}\n` +
+        (t.settling_phase_active ? `Settling Phase: ${t.settling_phase_active} | Progress: ${t.settling_progress_detected || "None"}\n` : "") +
+        `\n`;
+
+      if (t.bottom_telemetry) {
+        const b = t.bottom_telemetry;
+        let rectStr = b.loaderBoundingClientRect ? `[top:${b.loaderBoundingClientRect.top}, bot:${b.loaderBoundingClientRect.bottom}, w:${b.loaderBoundingClientRect.width}, h:${b.loaderBoundingClientRect.height}]` : "N/A";
+        text += `[BOTTOM CONTAINER DIAGNOSTIC]\n` +
+          `scrollEventObserved: ${b.scrollEventObserved || "NO"} | target: ${b.scrollEventTarget || "None"}\n` +
+          `scrollTop: ${b.scrollTop} | maxScrollTop: ${b.maxScrollTop} | distanceFromBottom: ${b.distanceFromBottom}px\n` +
+          `scrollHeight: ${b.scrollHeightBefore || 0} → ${b.scrollHeightAfter || 0}\n` +
+          `cardCount: ${b.cardCountBefore || 0} → ${b.cardCountAfter || 0} | profileLinks: ${b.profileLinkCountBefore || 0} → ${b.profileLinkCountAfter || 0}\n` +
+          `mutationsObserved: ${b.mutationsObserved || "NO"} | newDomNodes: ${b.newDomNodes || "None"}\n` +
+          `tempLoadingDetected: ${b.tempLoadingDetected || "None"}\n` +
+          `loaderFound: ${b.loaderFound ? "YES" : "No"} | visibleInContainer: ${b.loaderVisibleInContainer ? "YES" : "No"}\n` +
+          `loaderRect: ${rectStr}\n\n`;
+
+        if (Array.isArray(b.elementsNearBottom) && b.elementsNearBottom.length > 0) {
+          text += `[ELEMENTS NEAR BOTTOM (${b.elementsNearBottom.length})]\n`;
+          b.elementsNearBottom.forEach((elStr, idx) => {
+            text += `  ${idx + 1}. ${elStr}\n`;
+          });
+          text += `\n`;
+        }
+      }
+    }
+
+    if (Array.isArray(status.container_diagnostics) && status.container_diagnostics.length > 0) {
+      text += `=== LIVE CONTAINER CANDIDATES (${status.container_diagnostics.length}) ===\n`;
+      status.container_diagnostics.forEach((c, idx) => {
+        text += `[${idx + 1}] ${c.label}\n` +
+          `    desc: ${c.description}\n` +
+          `    scrollHeight: ${c.scrollHeight} | clientHeight: ${c.clientHeight} | scrollTop: ${c.scrollTop}\n` +
+          `    overflowY: ${c.overflowY} | isScrollable: ${c.isScrollable ? "YES ★" : "No"}\n` +
+          `    hasLoader: ${c.hasLoader ? "Yes" : "No"} | cardCount: ${c.cardCount}\n`;
+      });
+    }
+
+    if (text) {
+      diagEl.textContent = text;
+    }
+  }
+
+  if (status.connections) {
+    latestData = status;
+    renderExtractionPreview(status);
   }
 }
 
@@ -516,12 +559,14 @@ function startStatusPolling() {
   stopStatusPolling();
   statusPollInterval = setInterval(async () => {
     try {
-      const res = await sendTabMessage("getCollectionStatus");
-      updateProgressiveUI(res.status);
+      const res = await sendTabMessage("getAcquisitionStatus");
+      if (res && res.status) {
+        updateAcquisitionDashboard(res.status);
+      }
     } catch (e) {
       stopStatusPolling();
     }
-  }, 1000);
+  }, 400);
 }
 
 function stopStatusPolling() {
@@ -531,127 +576,27 @@ function stopStatusPolling() {
   }
 }
 
-// Sync status when popup opens
+// Initial status load & auto-poll
 (async () => {
   try {
-    const res = await sendTabMessage("getCollectionStatus");
-    if (res && res.status && (res.status.state === "collecting" || res.status.state === "paused")) {
-      updateProgressiveUI(res.status);
-      if (res.status.state === "collecting") {
-        startStatusPolling();
-      }
+    const res = await sendTabMessage("getAcquisitionStatus");
+    if (res && res.status) {
+      updateAcquisitionDashboard(res.status);
+      startStatusPolling();
     }
   } catch (e) {
-    // Page may not be active or content script not injected yet
+    // Page may not be active yet
   }
 })();
-
-if (loadConnectionsBtn) {
-  loadConnectionsBtn.addEventListener("click", async () => {
-    try {
-      output.textContent = "Starting progressive collection...";
-      const res = await sendTabMessage("startCollection");
-      updateProgressiveUI(res.status);
-      startStatusPolling();
-      output.innerHTML = `
-        <div class="status-box">
-          <strong>Progressive Connection Collector Active</strong><br><br>
-          Scroll manually through your connections page.<br>
-          Newly rendered cards will be added and deduplicated automatically.
-        </div>
-      `;
-    } catch (error) {
-      output.textContent = "Could not start collection:\n\n" + error.message;
-    }
-  });
-}
-
-if (btnPause) {
-  btnPause.addEventListener("click", async () => {
-    try {
-      const res = await sendTabMessage("pauseCollection");
-      updateProgressiveUI(res.status);
-      stopStatusPolling();
-    } catch (error) {
-      output.textContent = "Could not pause collection:\n\n" + error.message;
-    }
-  });
-}
-
-if (btnResume) {
-  btnResume.addEventListener("click", async () => {
-    try {
-      const res = await sendTabMessage("resumeCollection");
-      updateProgressiveUI(res.status);
-      startStatusPolling();
-    } catch (error) {
-      output.textContent = "Could not resume collection:\n\n" + error.message;
-    }
-  });
-}
-
-if (btnFinish) {
-  btnFinish.addEventListener("click", async () => {
-    try {
-      stopStatusPolling();
-      const res = await sendTabMessage("finishCollection");
-      updateProgressiveUI({ state: "idle" });
-
-      if (res.data) {
-        latestData = res.data;
-        renderExtractionPreview(res.data);
-
-        const countNotice = document.createElement("div");
-        countNotice.className = "status-box";
-        countNotice.style.marginBottom = "10px";
-        countNotice.style.background = "#e8f4ea";
-        countNotice.style.borderColor = "#b6dcbc";
-        countNotice.style.color = "#1e4620";
-        countNotice.innerHTML = `<strong>Collection Finished:</strong> ${res.data.first_degree_count} unique connections collected. Review your data below before confirming.`;
-        if (output) {
-          output.insertBefore(countNotice, output.firstChild);
-        }
-      }
-    } catch (error) {
-      output.textContent = "Could not finish collection:\n\n" + error.message;
-    }
-  });
-}
-
-if (btnCancel) {
-  btnCancel.addEventListener("click", async () => {
-    try {
-      const statusRes = await sendTabMessage("getCollectionStatus");
-      const count = (statusRes.status && statusRes.status.first_degree_count) || 0;
-
-      if (count > 0) {
-        const confirmed = confirm(`Are you sure you want to discard your ${count} collected connections?`);
-        if (!confirmed) return;
-      }
-
-      stopStatusPolling();
-      await sendTabMessage("cancelCollection");
-      updateProgressiveUI({ state: "idle" });
-
-      output.innerHTML = `
-        <div class="status-box empty">
-          Collection cancelled. Session discarded.
-        </div>
-      `;
-    } catch (error) {
-      output.textContent = "Could not cancel collection:\n\n" + error.message;
-    }
-  });
-}
 
 
 /* =========================================================
    EXTRACT LINKEDIN DATA
 ========================================================= */
 
-document
-  .getElementById("extract")
-  .addEventListener(
+const extractBtn = document.getElementById("extract");
+if (extractBtn) {
+  extractBtn.addEventListener(
     "click",
     async () => {
 
@@ -760,6 +705,7 @@ document
 
     }
   );
+}
 
 
 /* =========================================================
@@ -943,149 +889,66 @@ document
         ----------------------------------------- */
 
         if (!company) {
-
-          output.innerHTML = `
-
-            <div class="status-box">
-
-              <strong>
-                Enter a target company
-              </strong>
-
-              <br><br>
-
-              Example:
-              Company B
-
-            </div>
-
-          `;
-
-
+          if (targetSearchResultsEl) {
+            targetSearchResultsEl.innerHTML = `
+              <div class="status-box">
+                <strong>Enter a target company</strong>
+                <br><br>
+                Example: Company B
+              </div>
+            `;
+          }
           if (companyInput) {
             companyInput.focus();
           }
-
-
           return;
-
         }
 
-
-        /* -----------------------------------------
-           BUILD REQUEST BODY DIRECTLY
-        ----------------------------------------- */
-
         const requestBody = {
-
-          owner_id:
-            ownerId,
-
-          company:
-            company,
-
-          deal_side:
-            dealSide,
-
-          target_role:
-            targetRole
-
+          owner_id: ownerId,
+          company: company,
+          deal_side: dealSide,
+          target_role: targetRole
         };
 
+        if (targetSearchResultsEl) {
+          targetSearchResultsEl.innerHTML = `
+            <div class="status-box">
+              Searching for target person...
+              <br><br>
+              Company: ${escapeHtml(company)}
+              <br>
+              Role: ${escapeHtml(targetRole || "Any role")}
+            </div>
+          `;
+        }
 
-        console.log(
-          "Warm Graph target search:",
-          requestBody
-        );
+        const result = await backendRequest("/target/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody)
+        });
 
+        targetSearchState = result;
+        console.log("[TARGET SEARCH]", {
+          query: requestBody,
+          responseCandidates: result.candidates ? result.candidates.length : 0,
+          targetResultsRendered: (result.candidates || result.results || []).length
+        });
 
-        output.innerHTML = `
-
-          <div class="status-box">
-
-            Searching for target person...
-
-            <br><br>
-
-            Company:
-            ${escapeHtml(company)}
-
-            <br>
-
-            Role:
-            ${
-              escapeHtml(
-                targetRole ||
-                "Any role"
-              )
-            }
-
-          </div>
-
-        `;
-
-
-        /* -----------------------------------------
-           SEND REQUEST
-        ----------------------------------------- */
-
-        const result =
-          await backendRequest(
-            "/target/search",
-            {
-              method:
-                "POST",
-
-              headers: {
-                "Content-Type":
-                  "application/json"
-              },
-
-              body:
-                JSON.stringify(
-                  requestBody
-                )
-            }
-          );
-
-
-        console.log(
-          "Warm Graph target search result:",
-          result
-        );
-
-
-        /* -----------------------------------------
-           RENDER RESULT
-        ----------------------------------------- */
-
-        renderTargetSearch(
-          result
-        );
-
+        renderTargetSearch(targetSearchState);
 
       } catch (error) {
-
-        output.innerHTML = `
-
-          <div class="status-box">
-
-            <strong>
-              Target search failed
-            </strong>
-
-            <br><br>
-
-            ${escapeHtml(
-              error.message
-            )}
-
-          </div>
-
-        `;
-
+        if (targetSearchResultsEl) {
+          targetSearchResultsEl.innerHTML = `
+            <div class="status-box">
+              <strong>Target search failed</strong>
+              <br><br>
+              ${escapeHtml(error.message)}
+            </div>
+          `;
+        }
       }
-
     }
   );
 
@@ -1095,287 +958,114 @@ document
 ========================================================= */
 
 function renderTargetSearch(result) {
-
-  /*
-   * Current backend response shape:
-   *
-   * {
-   *   owner_id: "...",
-   *   company: "...",
-   *   deal_side: "sell_side",
-   *   candidates: [...]
-   * }
-   *
-   * Also support results/matches for future compatibility.
-   */
-
   let candidates = [];
 
-
-  if (
-    Array.isArray(
-      result.candidates
-    )
-  ) {
-
-    candidates =
-      result.candidates;
-
-  } else if (
-    Array.isArray(
-      result.results
-    )
-  ) {
-
-    candidates =
-      result.results;
-
-  } else if (
-    Array.isArray(
-      result.matches
-    )
-  ) {
-
-    candidates =
-      result.matches;
-
-  } else if (
-    result.name ||
-    result.person_name ||
-    result.profile_url
-  ) {
-
-    candidates = [
-      result
-    ];
-
+  if (Array.isArray(result.candidates)) {
+    candidates = result.candidates;
+  } else if (Array.isArray(result.results)) {
+    candidates = result.results;
+  } else if (Array.isArray(result.matches)) {
+    candidates = result.matches;
+  } else if (result.name || result.person_name || result.profile_url) {
+    candidates = [result];
   }
 
+  const container = targetSearchResultsEl || document.getElementById("targetSearchResults") || output;
 
-  /* -----------------------------------------
-     NO CANDIDATES
-  ----------------------------------------- */
-
-  if (
-    candidates.length === 0
-  ) {
-
-    output.innerHTML = `
-
+  if (candidates.length === 0) {
+    container.innerHTML = `
       <div class="status-box empty">
-
-        <strong>
-          No target person found
-        </strong>
-
+        <strong>No target person found</strong>
         <br><br>
-
-        Company:
-        ${escapeHtml(
-          result.company ||
-          "Unknown"
-        )}
-
+        Company: ${escapeHtml(result.company || "Unknown")}
         <br>
-
-        Deal side:
-        ${escapeHtml(
-          result.deal_side ||
-          "Unknown"
-        )}
-
-        ${
-          result.message
-            ? `
-              <br><br>
-              ${escapeHtml(
-                result.message
-              )}
-            `
-            : ""
-        }
-
+        Deal side: ${escapeHtml(result.deal_side || "Unknown")}
+        ${result.message ? `<br><br>${escapeHtml(result.message)}` : ""}
       </div>
-
     `;
-
     return;
-
   }
-
 
   let html = `
-
     <div class="section-title">
-      Target Person
+      Target Search Results (${candidates.length})
     </div>
-
   `;
 
-
   candidates.forEach((person) => {
-
-    const name =
-      person.name ||
-      person.person_name ||
-      "Unknown person";
-
-
-    const headline =
-      person.headline ||
-      person.title ||
-      person.matched_role ||
-      null;
-
+    const name = person.name || person.person_name || "Unknown person";
+    const headline = person.headline || person.title || person.matched_role || null;
+    const targetUrl = person.profile_url || person.person_id || person.id || "";
 
     html += `
-
       <div class="record">
-
-        <div class="record-name">
-          ${escapeHtml(name)}
-        </div>
-
-
-        ${
-          headline
-            ? `
-              <div class="record-headline">
-                ${escapeHtml(
-                  headline
-                )}
-              </div>
-            `
-            : ""
-        }
-
+        <div class="record-name">${escapeHtml(name)}</div>
+        ${headline ? `<div class="record-headline">${escapeHtml(headline)}</div>` : ""}
 
         <div class="record-meta">
-
-          ${
-            person.degree
-              ? `
-                <span class="badge">
-                  ${escapeHtml(
-                    person.degree
-                  )}
-                </span>
-              `
-              : ""
-          }
-
-
-          ${
-            person.matched_role
-              ? `
-                <span class="badge">
-                  Role match
-                </span>
-              `
-              : ""
-          }
-
-
-          ${
-            person.confidence !==
-            undefined
-              ? `
-                <span class="badge">
-                  Confidence:
-                  ${escapeHtml(
-                    person.confidence
-                  )}
-                </span>
-              `
-              : ""
-          }
-
-
-          ${
-            person.warmth !==
-            undefined
-              ? `
-                <span class="badge">
-                  Warmth:
-                  ${escapeHtml(
-                    person.warmth
-                  )}
-                </span>
-              `
-              : ""
-          }
-
+          ${person.degree ? `<span class="badge">${escapeHtml(person.degree)}</span>` : ""}
+          ${person.matched_role ? `<span class="badge">Role match</span>` : ""}
+          ${person.confidence !== undefined ? `<span class="badge">Confidence: ${escapeHtml(person.confidence)}</span>` : ""}
+          ${person.warmth !== undefined ? `<span class="badge">Warmth: ${escapeHtml(person.warmth)}</span>` : ""}
         </div>
 
+        ${person.reason ? `<div class="mutual"><strong>Why matched:</strong> ${escapeHtml(person.reason)}</div>` : ""}
+        ${person.path_count !== undefined ? `<div class="mutual"><strong>Paths found:</strong> ${escapeHtml(person.path_count)}</div>` : ""}
 
-        ${
-          person.reason
-            ? `
-              <div class="mutual">
-
-                <strong>
-                  Why matched:
-                </strong>
-
-                ${escapeHtml(
-                  person.reason
-                )}
-
-              </div>
-            `
-            : ""
-        }
-
-
-        ${
-          person.path_count !==
-          undefined
-            ? `
-              <div class="mutual">
-
-                <strong>
-                  Paths found:
-                </strong>
-
-                ${escapeHtml(
-                  person.path_count
-                )}
-
-              </div>
-            `
-            : ""
-        }
-
-
-        ${
-          person.profile_url
-            ? `
-              <a
-                class="record-link"
-                href="${escapeHtml(
-                  person.profile_url
-                )}"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                ${escapeHtml(
-                  person.profile_url
-                )}
-              </a>
-            `
-            : ""
-        }
-
+        ${targetUrl ? `
+          <div style="margin-top:8px; display:flex; gap:6px;">
+            <button type="button" class="use-as-target-btn" data-url="${escapeHtml(targetUrl)}" data-name="${escapeHtml(name)}" data-role="${escapeHtml(headline || '')}" style="flex:1; padding:6px 10px; font-size:11px; background:#eef4ff; color:#0A66C2; border:1px solid #b8c9e8; border-radius:4px; cursor:pointer; font-weight:600;">
+              Use as Path Target
+            </button>
+            <button type="button" class="find-candidate-path-btn" data-url="${escapeHtml(targetUrl)}" data-name="${escapeHtml(name)}" data-role="${escapeHtml(headline || '')}" style="flex:1; padding:6px 10px; font-size:11px; background:#0A66C2; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:600;">
+              Find Warm Path
+            </button>
+          </div>
+          <a class="record-link" href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(targetUrl)}</a>
+        ` : ""}
       </div>
-
     `;
-
   });
 
+  container.innerHTML = html;
 
-  output.innerHTML =
-    html;
+  const selectTarget = (url, name, role) => {
+    selectedTargetState = { url, name, role };
+    const targetInput = document.getElementById("pathTarget");
+    if (targetInput) {
+      targetInput.value = url;
+      targetInput.focus();
+      targetInput.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    if (selectedTargetBadgeEl) {
+      selectedTargetBadgeEl.style.display = "block";
+      selectedTargetBadgeEl.innerHTML = `<strong>Selected Target:</strong> ${escapeHtml(name)}${role ? ` (${escapeHtml(role)})` : ''}`;
+    }
+  };
 
+  container.querySelectorAll(".use-as-target-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      selectTarget(
+        btn.getAttribute("data-url") || "",
+        btn.getAttribute("data-name") || "",
+        btn.getAttribute("data-role") || ""
+      );
+    });
+  });
+
+  container.querySelectorAll(".find-candidate-path-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      selectTarget(
+        btn.getAttribute("data-url") || "",
+        btn.getAttribute("data-name") || "",
+        btn.getAttribute("data-role") || ""
+      );
+      const findPathBtn = document.getElementById("findPath");
+      if (findPathBtn) {
+        findPathBtn.click();
+      }
+    });
+  });
 }
 
 
@@ -1405,91 +1095,54 @@ document
 
 
         if (!targetId) {
-
-          output.innerHTML = `
-
-            <div class="status-box">
-
-              <strong>
-                Enter a target profile URL
-              </strong>
-
-              <br><br>
-
-              Example:
-              https://www.linkedin.com/in/target-person
-
-            </div>
-
-          `;
-
+          if (pathResultsEl) {
+            pathResultsEl.innerHTML = `
+              <div class="status-box">
+                <strong>Enter a target profile URL</strong>
+                <br><br>
+                Example: https://www.linkedin.com/in/target-person
+              </div>
+            `;
+          }
           return;
-
         }
 
+        if (pathResultsEl) {
+          pathResultsEl.innerHTML = `
+            <div class="status-box">Calculating warm path...</div>
+          `;
+        }
 
-        const result =
-          await backendRequest(
-            "/graph/path",
-            {
-              method:
-                "POST",
+        const result = await backendRequest("/graph/path", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            owner_id: ownerId,
+            source_id: ownerId,
+            target_id: targetId,
+            cutoff: 4
+          })
+        });
 
-              headers: {
-                "Content-Type":
-                  "application/json"
-              },
-
-              body:
-                JSON.stringify({
-
-                  owner_id:
-                    ownerId,
-
-                  source_id:
-                    ownerId,
-
-                  target_id:
-                    targetId,
-
-                  cutoff:
-                    4
-
-                })
-            }
-          );
-
-
-        renderPathResult(
-          result
-        );
-
+        warmPathState = result;
+        renderPathResult(warmPathState);
 
       } catch (error) {
-
-        output.innerHTML = `
-
-          <div class="status-box">
-
-            <strong>
-              Path search failed
-            </strong>
-
-            <br><br>
-
-            ${escapeHtml(
-              error.message
-            )}
-
-          </div>
-
-        `;
-
+        if (pathResultsEl) {
+          pathResultsEl.innerHTML = `
+            <div class="status-box">
+              <strong>Path search failed</strong>
+              <br><br>
+              ${escapeHtml(error.message)}
+            </div>
+          `;
+        }
       }
-
     }
   );
-  /* =========================================================
+
+
+/* =========================================================
    EXPLAIN WARM PATH
 ========================================================= */
 
@@ -1498,107 +1151,54 @@ document
   .addEventListener(
     "click",
     async () => {
-
       try {
-
-        const ownerId =
-          await getOwnerForBackend();
-
-        const targetId =
-          document
-            .getElementById("pathTarget")
-            .value
-            .trim();
+        const ownerId = await getOwnerForBackend();
+        const targetId = document.getElementById("pathTarget").value.trim();
 
         if (!targetId) {
-
-          output.innerHTML = `
-
-            <div class="status-box">
-
-              <strong>
-                Enter a target profile URL
-              </strong>
-
-              <br><br>
-
-              Example:
-              https://www.linkedin.com/in/target-person
-
-            </div>
-
-          `;
-
+          if (pathResultsEl) {
+            pathResultsEl.innerHTML = `
+              <div class="status-box">
+                <strong>Enter a target profile URL</strong>
+                <br><br>
+                Example: https://www.linkedin.com/in/target-person
+              </div>
+            `;
+          }
           return;
         }
 
-        output.innerHTML = `
+        if (pathResultsEl) {
+          pathResultsEl.innerHTML = `
+            <div class="status-box">Generating warm-path explanation...</div>
+          `;
+        }
 
-          <div class="status-box">
-            Generating warm-path explanation...
-          </div>
+        const result = await backendRequest("/graph/explain-path", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            owner_id: ownerId,
+            source_id: ownerId,
+            target_id: targetId,
+            cutoff: 4
+          })
+        });
 
-        `;
-
-        const result =
-          await backendRequest(
-            "/graph/explain-path",
-            {
-              method: "POST",
-
-              headers: {
-                "Content-Type":
-                  "application/json"
-              },
-
-              body:
-                JSON.stringify({
-
-                  owner_id:
-                    ownerId,
-
-                  source_id:
-                    ownerId,
-
-                  target_id:
-                    targetId,
-
-                  cutoff:
-                    4
-
-                })
-            }
-          );
-
-        console.log(
-          "Warm Graph path explanation:",
-          result
-        );
-
-        renderPathExplanation(result);
+        explainPathState = result;
+        renderPathExplanation(explainPathState);
 
       } catch (error) {
-
-        output.innerHTML = `
-
-          <div class="status-box">
-
-            <strong>
-              Path explanation failed
-            </strong>
-
-            <br><br>
-
-            ${escapeHtml(
-              error.message
-            )}
-
-          </div>
-
-        `;
-
+        if (pathResultsEl) {
+          pathResultsEl.innerHTML = `
+            <div class="status-box">
+              <strong>Path explanation failed</strong>
+              <br><br>
+              ${escapeHtml(error.message)}
+            </div>
+          `;
+        }
       }
-
     }
   );
 
@@ -1608,161 +1208,52 @@ document
 ========================================================= */
 
 function renderPathExplanation(result) {
-
-  const explanation =
-    result.explanation ||
-    result.message ||
-    result.detail ||
-    "";
-
-  const paths =
-    Array.isArray(result.paths)
-      ? result.paths
-      : [];
+  const explanation = result.explanation || result.message || result.detail || "";
+  const paths = Array.isArray(result.paths) ? result.paths : [];
+  const container = pathResultsEl || document.getElementById("pathResults") || output;
 
   let html = `
-
-    <div class="section-title">
-      Warm Path Explanation
-    </div>
-
+    <div class="section-title">Warm Path Explanation</div>
   `;
 
-
   if (paths.length > 0) {
-
-    paths.forEach(
-      (path, index) => {
-
-        html += `
-
-          <div class="record">
-
-            <div class="record-name">
-              Path ${index + 1}
+    paths.forEach((path, index) => {
+      html += `
+        <div class="record">
+          <div class="record-name">Path ${index + 1}</div>
+          ${path.warmth !== undefined ? `
+            <div class="record-meta">
+              <span class="badge">Warmth: ${escapeHtml(path.warmth)}</span>
+              ${path.hops !== undefined ? `<span class="badge">${escapeHtml(path.hops)} hops</span>` : ""}
             </div>
-
-            ${
-              path.warmth !== undefined
-                ? `
-                  <div class="record-meta">
-
-                    <span class="badge">
-                      Warmth:
-                      ${escapeHtml(
-                        path.warmth
-                      )}
-                    </span>
-
-                    ${
-                      path.hops !== undefined
-                        ? `
-                          <span class="badge">
-                            ${escapeHtml(
-                              path.hops
-                            )}
-                            hops
-                          </span>
-                        `
-                        : ""
-                    }
-
-                  </div>
-                `
-                : ""
-            }
-
-
-            ${
-              Array.isArray(path.path)
-                ? `
-                  <div class="mutual">
-
-                    <strong>
-                      Path:
-                    </strong>
-
-                    ${escapeHtml(
-                      path.path.join(" → ")
-                    )}
-
-                  </div>
-                `
-                : ""
-            }
-
-
-            ${
-              path.explanation
-                ? `
-                  <div class="mutual">
-
-                    <strong>
-                      Explanation:
-                    </strong>
-
-                    ${escapeHtml(
-                      path.explanation
-                    )}
-
-                  </div>
-                `
-                : ""
-            }
-
-          </div>
-
-        `;
-
-      }
-    );
-
+          ` : ""}
+          ${Array.isArray(path.path) ? `
+            <div class="mutual"><strong>Path:</strong> ${escapeHtml(path.path.join(" → "))}</div>
+          ` : ""}
+          ${path.explanation ? `
+            <div class="mutual"><strong>Explanation:</strong> ${escapeHtml(path.explanation)}</div>
+          ` : ""}
+        </div>
+      `;
+    });
   }
-
 
   if (explanation) {
-
     html += `
-
       <div class="record">
-
-        <div class="record-name">
-          Explanation
-        </div>
-
-        <div class="record-headline">
-          ${escapeHtml(
-            explanation
-          )}
-        </div>
-
+        <div class="record-name">Explanation</div>
+        <div class="record-headline">${escapeHtml(explanation)}</div>
       </div>
-
     `;
-
   }
 
-
-  if (
-    !explanation &&
-    paths.length === 0
-  ) {
-
+  if (!explanation && paths.length === 0) {
     html += `
-
-      <div class="status-box empty">
-        No explanation was returned by
-        the backend.
-      </div>
-
+      <div class="status-box empty">No explanation returned.</div>
     `;
-
   }
 
-
-  output.innerHTML =
-    html;
-
+  container.innerHTML = html;
 }
 
 
@@ -1771,175 +1262,67 @@ function renderPathExplanation(result) {
 ========================================================= */
 
 function renderPathResult(result) {
+  const paths = result.paths || [];
+  const container = pathResultsEl || document.getElementById("pathResults") || output;
 
-  const paths =
-    result.paths || [];
-
-
-  if (
-    !Array.isArray(paths) ||
-    paths.length === 0
-  ) {
-
-    /*
-     * Keep the actual backend response visible
-     * when no path is found, which helps debugging.
-     */
-
-    output.innerHTML = `
-
+  if (!Array.isArray(paths) || paths.length === 0) {
+    container.innerHTML = `
       <div class="status-box empty">
-
-        <strong>
-          No warm path found
-        </strong>
-
+        <strong>No warm path found</strong>
         <br><br>
-
-        Target:
-        ${escapeHtml(
-          result.target_id ||
-          "Unknown"
-        )}
-
+        Target: ${escapeHtml(result.target_id || "Unknown")}
       </div>
-
     `;
-
     return;
-
   }
 
-
   let html = `
-
     <div class="summary">
-
       <div class="summary-card">
-
-        <span class="summary-number">
-          ${paths.length}
-        </span>
-
-        <span class="summary-label">
-          Path${paths.length === 1 ? "" : "s"}
-        </span>
-
+        <span class="summary-number">${paths.length}</span>
+        <span class="summary-label">Path${paths.length === 1 ? "" : "s"}</span>
       </div>
-
     </div>
-
-
-    <div class="section-title">
-      Warm Paths
-    </div>
-
+    <div class="section-title">Warm Paths</div>
   `;
 
-
-  paths.forEach(
-    (path, index) => {
-
-      html += `
-
-        <div class="record">
-
-          <div class="record-name">
-            Path ${index + 1}
-          </div>
-
-
-          ${
-            path.hops !==
-            undefined
-              ? `
-                <div class="record-meta">
-
-                  <span class="badge">
-                    ${escapeHtml(
-                      path.hops
-                    )}
-                    hops
-                  </span>
-
-                </div>
-              `
-              : ""
-          }
-
-
-          ${
-            path.warmth !==
-            undefined
-              ? `
-                <div class="mutual">
-
-                  <strong>
-                    Warmth:
-                  </strong>
-
-                  ${escapeHtml(
-                    path.warmth
-                  )}
-
-                </div>
-              `
-              : ""
-          }
-
-
-          ${
-            path.explanation
-              ? `
-                <div class="mutual">
-
-                  <strong>
-                    Explanation:
-                  </strong>
-
-                  ${escapeHtml(
-                    path.explanation
-                  )}
-
-                </div>
-              `
-              : ""
-          }
-
-
-          ${
-            Array.isArray(
-              path.path
-            )
-              ? `
-                <div class="mutual">
-
-                  <strong>
-                    Path:
-                  </strong>
-
-                  ${escapeHtml(
-                    path.path.join(
-                      " → "
-                    )
-                  )}
-
-                </div>
-              `
-              : ""
-          }
-
+  paths.forEach((path, index) => {
+    html += `
+      <div class="record">
+        <div class="record-name">Path ${index + 1}</div>
+        ${path.hops !== undefined ? `<div class="record-meta"><span class="badge">${escapeHtml(path.hops)} hops</span></div>` : ""}
+        ${path.warmth !== undefined ? `<div class="mutual"><strong>Warmth:</strong> ${escapeHtml(path.warmth)}</div>` : ""}
+        ${path.explanation ? `<div class="mutual"><strong>Explanation:</strong> ${escapeHtml(path.explanation)}</div>` : ""}
+        ${Array.isArray(path.path) ? `<div class="mutual"><strong>Path:</strong> ${escapeHtml(path.path.join(" → "))}</div>` : ""}
+        <div style="margin-top:8px;">
+          <button type="button" class="explain-single-path-btn" data-path="${escapeHtml(JSON.stringify(path.path || []))}" style="width:auto; padding:5px 10px; font-size:11px; background:#f0f4f9; color:#1a73e8; border:1px solid #dadce0; border-radius:4px; cursor:pointer; font-weight:600;">
+            Explain This Path
+          </button>
         </div>
+      </div>
+    `;
+  });
 
-      `;
+  container.innerHTML = html;
 
-    }
-  );
-
-
-  output.innerHTML =
-    html;
-
+  container.querySelectorAll(".explain-single-path-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      try {
+        const ownerId = await getOwnerForBackend();
+        const rawPath = JSON.parse(btn.getAttribute("data-path") || "[]");
+        container.innerHTML = `<div class="status-box">Generating path explanation...</div>`;
+        const res = await backendRequest("/graph/explain-path", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ owner_id: ownerId, path: rawPath })
+        });
+        explainPathState = res;
+        renderPathExplanation(explainPathState);
+      } catch (e) {
+        container.innerHTML = `<div class="status-box empty">Explanation failed: ${escapeHtml(e.message)}</div>`;
+      }
+    });
+  });
 }
 
 
@@ -1996,12 +1379,55 @@ document
           );
 
 
-        output.textContent =
-          JSON.stringify(
-            result,
-            null,
-            2
-          );
+        const matches = result.results || [];
+        if (matches.length === 0) {
+          output.innerHTML = `
+            <div class="status-box empty">
+              No connections found matching search query.
+            </div>
+          `;
+          return;
+        }
+
+        let html = `
+          <div class="section-title">
+            Network Search Results (${matches.length})
+          </div>
+        `;
+
+        matches.forEach((person) => {
+          const name = person.name || "Unknown person";
+          const headline = person.title || person.headline || person.company || "No details";
+          const profileUrl = person.profile_url || person.id || "";
+
+          html += `
+            <div class="record">
+              <div class="record-name">${escapeHtml(name)}</div>
+              <div class="record-headline">${escapeHtml(headline)}</div>
+              ${profileUrl ? `
+                <div style="margin-top:6px;">
+                  <button type="button" class="use-as-target-btn" data-url="${escapeHtml(profileUrl)}" style="width:auto; padding:5px 10px; font-size:11px; background:#eef4ff; color:#0A66C2; border:1px solid #b8c9e8; border-radius:4px; cursor:pointer; font-weight:600;">
+                    Use as Path Target
+                  </button>
+                </div>
+                <a class="record-link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(profileUrl)}</a>
+              ` : ""}
+            </div>
+          `;
+        });
+
+        output.innerHTML = html;
+
+        document.querySelectorAll(".use-as-target-btn").forEach(btn => {
+          btn.addEventListener("click", () => {
+            const targetInput = document.getElementById("pathTarget");
+            if (targetInput) {
+              targetInput.value = btn.getAttribute("data-url") || "";
+              targetInput.focus();
+              targetInput.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+          });
+        });
 
 
       } catch (error) {
@@ -2059,9 +1485,9 @@ document
    SEND TO BACKEND (User-initiated sharing with explicit confirmation)
 ========================================================= */
 
-document
-  .getElementById("send")
-  .addEventListener(
+const sendBtn = document.getElementById("send");
+if (sendBtn) {
+  sendBtn.addEventListener(
     "click",
     async () => {
 
@@ -2200,3 +1626,4 @@ document
 
     }
   );
+}

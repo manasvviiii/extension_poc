@@ -248,6 +248,12 @@ class ImportRequest(BaseModel):
 
     confirmed: bool = False
 
+    expected_total: int | None = None
+
+    collected_total: int | None = None
+
+    completion_status: str | None = None
+
 
 class RelationshipRequest(BaseModel):
     owner_id: str
@@ -775,6 +781,24 @@ def import_network(
             detail="Explicit confirmation is required before sharing network data."
         )
 
+    # Validate completion status for import safety guard
+    status_str = (request.completion_status or "").lower()
+    allowed_statuses = {"complete", "complete_rendered_dataset"}
+
+    if not status_str:
+        collected = request.collected_total if request.collected_total is not None else len(request.connections)
+        expected = request.expected_total
+        if expected is None or expected <= 0 or collected >= expected:
+            status_str = "complete"
+        elif collected == expected - 1:
+            status_str = "complete_rendered_dataset"
+
+    if status_str not in allowed_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail="Import rejected: Dataset is incomplete. Backend sync requires complete or complete_rendered_dataset status."
+        )
+
     # Convert request payload into Phase 7 ProviderSnapshot
     snapshot = extension_payload_to_snapshot(request.model_dump())
 
@@ -1156,19 +1180,7 @@ def graph_view(
     graph = get_owner_graph(owner_id, auth_context=auth_context)
     html = graph_service.generate_graph_html(graph)
 
-    if html is None:
-        return HTMLResponse(
-            """
-            <h2>pyvis is not installed.</h2>
-            <p>Run:</p>
-            <pre>pip install pyvis</pre>
-            """,
-            status_code=500
-        )
-
-    return HTMLResponse(
-        content=html
-    )
+    return HTMLResponse(content=html)
 
 
 # =========================================================
@@ -1381,41 +1393,54 @@ def candidate_for_person(
     roles: list[str],
     auth_context: AuthContext | None = None,
 ) -> dict[str, Any] | None:
-    if company.casefold() not in str(person.get("company") or "").casefold() \
-            and company.casefold() not in str(person.get("title") or "").casefold():
+    comp_fold = company.casefold().strip()
+    p_company = str(person.get("company") or "").casefold()
+    p_title = str(person.get("title") or "").casefold()
+    p_name = str(person.get("name") or "").casefold()
+
+    if comp_fold not in p_company and comp_fold not in p_title and comp_fold not in p_name:
         return None
-    matched_role, priority = role_match(str(person.get("title") or ""), roles)
+
+    matched_role, priority = role_match(p_title, roles)
     if not matched_role:
-        return None
+        # If user searched for a company without a strict matching executive role, include all company matches
+        matched_role = person.get("title") or "Connection"
+        priority = 10
+
     graph = graph_service.get_owner_graph(owner_id, auth_context, load_network)
-    target_id = person["person_id"]
+    target_id = person.get("person_id") or person.get("profile_url") or ""
+    resolved_target = graph_service.resolve_node_id(graph, target_id)
+
     path_data = []
-    if target_id in graph:
+    if resolved_target and resolved_target in graph:
         try:
             path_data = graph_service.find_paths(
                 owner_id=owner_id,
                 source_id=owner_id,
-                target_id=target_id,
+                target_id=resolved_target,
                 cutoff=4,
                 auth_context=auth_context,
                 load_network_fn=load_network,
             )["paths"]
         except HTTPException:
             path_data = []
+
     confidence = round(
-        min(1.0, 0.55 + (len(roles) - priority + 1) * 0.08),
+        min(1.0, 0.55 + (max(1, len(roles) - priority + 1)) * 0.08),
         2,
     )
     return {
         **person,
+        "person_id": resolved_target or target_id,
         "matched_role": matched_role,
         "role_priority": priority,
         "confidence": confidence,
-        "reason": f"Current {matched_role} at target company",
+        "reason": f"Current {matched_role} at {person.get('company') or company}",
         "path_summary": {
             "available": bool(path_data),
             "path_count": len(path_data),
         },
+        "path_count": len(path_data),
         "paths": path_data,
     }
 

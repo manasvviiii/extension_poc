@@ -1,5 +1,136 @@
-<!doctype html><meta charset="utf-8"><title>Demo Connections</title>
-<h1>Demo: My Connections</h1>
-<div class="connection" data-profile-url="https://example.com/person-x"><b>Person X</b> — CFO — Company X</div>
-<div class="connection" data-profile-url="https://example.com/person-y"><b>Person Y</b> — CEO — Company Y</div>
-<div class="connection" data-profile-url="https://example.com/person-z"><b>Person Z</b> — Partner — Company Z</div>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Synthetic Paginated & Infinite Scroll Connections Demo</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .pagination-bar { margin: 15px 0; padding: 10px; background: #f0f0f0; border-radius: 6px; }
+    .connection-card { border: 1px solid #ccc; border-radius: 6px; padding: 10px; margin-bottom: 8px; background: #fafafa; }
+    .connection-card a { font-weight: bold; color: #0a66c2; text-decoration: none; }
+    button { padding: 6px 14px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .scaffold-finite-scroll__loader { padding: 10px; text-align: center; color: #666; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>Connections (1,020)</h1>
+  <p>Synthetic multi-page connections test dataset (1,020 records across 21 pages).</p>
+
+  <div class="pagination-bar">
+    <button id="prevPage" disabled>&laquo; Previous</button>
+    <span id="pageIndicator" style="margin: 0 15px; font-weight: bold;">Page 1 of 21</span>
+    <button id="nextPage">Next Page &raquo;</button>
+  </div>
+
+  <div id="connectionsContainer" class="mn-connections-list scaffold-finite-scroll__content"></div>
+
+  <div class="scaffold-finite-scroll__loader" id="infiniteLoader" style="cursor:pointer;">
+    Loading more connections...
+  </div>
+
+  <div class="pagination-bar">
+    <button id="prevPageBottom" disabled>&laquo; Previous</button>
+    <span id="pageIndicatorBottom" style="margin: 0 15px; font-weight: bold;">Page 1 of 21</span>
+    <button id="nextPageBottom">Next Page &raquo;</button>
+  </div>
+
+  <script>
+    const TOTAL_RECORDS = 1020;
+    const PAGE_SIZE = 50;
+    const TOTAL_PAGES = Math.ceil(TOTAL_RECORDS / PAGE_SIZE);
+
+    const allRecords = [];
+    const companies = ["TechCorp", "FinanceHub", "HealthPlus", "EduGlobal", "InnovateLabs", "AlphaGroup"];
+    const roles = ["Software Engineer", "Product Manager", "VP of Sales", "CFO", "Director of Engineering", "Partner"];
+    const cities = ["New York, NY", "San Francisco, CA", "London, UK", "Bengaluru, India", "Toronto, Canada"];
+
+    for (let i = 1; i <= TOTAL_RECORDS; i++) {
+      const isDuplicate = (i % 73 === 0);
+      const personId = isDuplicate ? (i - 10) : i;
+      const firstName = ["Alex", "Jordan", "Taylor", "Morgan", "Sam", "Chris", "Pat", "Riley", "Casey", "Avery"][personId % 10];
+      const lastName = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"][Math.floor(personId / 10) % 10];
+      const name = `${firstName} ${lastName} #${personId}`;
+      const slug = `${firstName.toLowerCase()}-${lastName.toLowerCase()}-${personId}`;
+      const profileUrl = `https://www.linkedin.com/in/${slug}`;
+      const company = companies[personId % companies.length];
+      const role = roles[personId % roles.length];
+      const headline = `${role} at ${company}`;
+      const location = cities[personId % cities.length];
+
+      allRecords.push({
+        id: personId,
+        name,
+        profileUrl,
+        headline,
+        location,
+        connectedDate: `September ${(personId % 28) + 1}, 2026`
+      });
+    }
+
+    let currentPage = 1;
+
+    function renderPage(page) {
+      currentPage = page;
+      const startIndex = (page - 1) * PAGE_SIZE;
+      const endIndex = Math.min(startIndex + PAGE_SIZE, TOTAL_RECORDS);
+      const pageRecords = allRecords.slice(startIndex, endIndex);
+
+      const container = document.getElementById("connectionsContainer");
+      container.innerHTML = "";
+
+      pageRecords.forEach(rec => {
+        const card = document.createElement("div");
+        card.className = "connection-card mn-connection-card";
+        card.innerHTML = `
+          <a href="${rec.profileUrl}">${rec.name}</a>
+          <div>${rec.headline}</div>
+          <div>1st</div>
+          <div>Connected on ${rec.connectedDate}</div>
+          <div>${rec.location}</div>
+          <button>Message</button>
+        `;
+        container.appendChild(card);
+      });
+
+      const text = `Page ${page} of ${TOTAL_PAGES} (Showing ${startIndex + 1}-${endIndex} of ${TOTAL_RECORDS})`;
+      document.getElementById("pageIndicator").textContent = text;
+      document.getElementById("pageIndicatorBottom").textContent = text;
+
+      const hasPrev = page > 1;
+      const hasNext = page < TOTAL_PAGES;
+
+      document.getElementById("prevPage").disabled = !hasPrev;
+      document.getElementById("prevPageBottom").disabled = !hasPrev;
+      document.getElementById("nextPage").disabled = !hasNext;
+      document.getElementById("nextPageBottom").disabled = !hasNext;
+
+      const loader = document.getElementById("infiniteLoader");
+      if (loader) {
+        loader.style.display = hasNext ? "block" : "none";
+      }
+    }
+
+    function nextPage() {
+      if (currentPage < TOTAL_PAGES) {
+        renderPage(currentPage + 1);
+      }
+    }
+
+    function prevPage() {
+      if (currentPage > 1) {
+        renderPage(currentPage - 1);
+      }
+    }
+
+    document.getElementById("nextPage").addEventListener("click", nextPage);
+    document.getElementById("nextPageBottom").addEventListener("click", nextPage);
+    document.getElementById("prevPage").addEventListener("click", prevPage);
+    document.getElementById("prevPageBottom").addEventListener("click", prevPage);
+    document.getElementById("infiniteLoader").addEventListener("click", nextPage);
+
+    // Initial render
+    renderPage(1);
+  </script>
+</body>
+</html>

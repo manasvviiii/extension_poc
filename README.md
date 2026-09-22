@@ -24,8 +24,8 @@ uvicorn main:app --reload --port 8000
 
 Expected: Imported 3 connections. Owner: banker_A
 
-### Progressive Connection Loading
-Connections are progressively collected while the user manually scrolls through the connections page. The extension deduplicates connections during the session. The user reviews the collected records and explicitly confirms before sharing them with the backend.
+### Automated Connection Acquisition
+Connections are acquired automatically across paginated views when the user clicks **Start Automated Extraction**. The `ConnectionAcquisitionSession` navigates pagination controls, performs multi-key deterministic deduplication across batches, and tracks progress. If pagination controls are present, acquisition completes upon reaching the end of all pages (`completed`). If no pagination controls are available on a page, acquisition terminates cleanly and reports a partial dataset (`incomplete` / `unsupported`). The user reviews the collected dataset in the popup preview and explicitly confirms via **Confirm & Share** before data is sent to the backend. No automated page scrolling or stealth evasion techniques are used.
 
 
 ## PostgreSQL persistence (Phase 2)

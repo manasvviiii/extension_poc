@@ -245,51 +245,49 @@
   </div>
 
   <div class="section">
-    <div class="section-title">1. Extract visible data</div>
+    <div class="section-title">Connections Acquisition</div>
 
-    <button id="loadConnections" style="background:#0A66C2; color:white; border-color:#0A66C2;">
-      Load Connections
-    </button>
-
-    <div id="progressiveContainer" style="display:none; margin-bottom:10px; padding:10px; border:1px solid #0A66C2; border-radius:6px; background:#f0f7ff;">
-      <div id="progressiveStatusTitle" style="font-weight:700; color:#0A66C2; font-size:12px; margin-bottom:4px;">
-        Loading connections...
+    <div id="acquisitionContainer" style="display:block; margin-bottom:10px; padding:14px; border:1px solid #0A66C2; border-radius:8px; background:#f0f7ff;">
+      <div id="acquisitionStatusTitle" style="font-weight:700; color:#0A66C2; font-size:14px; margin-bottom:4px;">
+        ● Collecting connections...
       </div>
-      <div id="progressiveInstruction" style="font-size:11px; color:#555; margin-bottom:8px;">
-        Scroll through your connections to continue loading.
+      <div id="acquisitionCountDisplay" style="font-size:22px; font-weight:700; color:#111; margin:6px 0;">
+        0 / 0 connections
       </div>
-
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:12px;">
-        <span id="progressiveCount" style="font-weight:700;">Connections collected: 0</span>
-        <span id="progressiveBadge" style="font-size:11px; color:#2e7d32; font-weight:600; display:none;">+0 new</span>
+      <div id="acquisitionInstruction" style="font-size:12px; color:#444; margin-bottom:8px; line-height:1.4;">
+        Automatically acquiring dataset from LinkedIn connections page...
       </div>
 
-      <div style="display:flex; gap:6px; flex-wrap:wrap;">
-        <button id="btnPause" style="flex:1; margin-bottom:0; font-size:11px; padding:6px 8px;">Pause</button>
-        <button id="btnResume" style="flex:1; margin-bottom:0; font-size:11px; padding:6px 8px; display:none;">Resume</button>
-        <button id="btnFinish" style="flex:1; margin-bottom:0; font-size:11px; padding:6px 8px; background:#111; color:white; border-color:#111;">Finish Loading</button>
-        <button id="btnCancel" style="flex:1; margin-bottom:0; font-size:11px; padding:6px 8px; background:#fff; color:#c62828; border-color:#e57373;">Cancel</button>
+      <div id="acquisitionProgressBarContainer" style="width:100%; height:8px; background:#d0e2ff; border-radius:4px; overflow:hidden; margin:8px 0;">
+        <div id="acquisitionProgressBar" style="width:0%; height:100%; background:#0A66C2; transition:width 0.3s ease;"></div>
+      </div>
+      <div id="acquisitionRemainingText" style="font-size:11px; color:#555; margin-bottom:8px; font-weight:600;">
+        0 connections remaining
+      </div>
+
+      <div style="margin-top:8px; padding-top:8px; border-top:1px solid #b8c9e8; display:flex; justify-content:space-between; align-items:center;">
+        <strong id="syncStatusBadge" style="color:#0A66C2; font-size:12px;">Backend Sync: Pending</strong>
+        <button id="syncNetworkBtn" type="button" style="display:none; width:auto; padding:6px 12px; margin:0; background:#0A66C2; color:white; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer;">Sync Network</button>
+      </div>
+
+      <div style="margin-top:8px; text-align:right;">
+        <button id="toggleDebugTelemetryBtn" type="button" style="background:none; border:none; color:#666; font-size:10px; cursor:pointer; text-decoration:underline; padding:0;">[Debug Mode]</button>
+      </div>
+
+      <div id="telemetryDiagnostics" style="margin-top:8px; padding-top:6px; border-top:1px solid #cce0ff; font-family:monospace; font-size:10px; color:#333; display:none; white-space:pre-wrap;">
       </div>
     </div>
-
-    <button id="extract">
-      Extract LinkedIn Data (One-shot)
-    </button>
-
-    <button id="send">
-      Send to Backend
-    </button>
   </div>
 
   <div class="section">
     <div class="section-title">Extraction Preview</div>
+    <div style="margin-bottom:8px;">
+      <input id="searchConnectionsInput" type="text" placeholder="Search extracted connections..." style="width:100%; padding:6px 8px; font-size:12px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;" />
+    </div>
 
     <div id="output">
       <div class="status-box empty">
         No data extracted yet.
-
-        Open the synthetic test page and click
-        "Extract LinkedIn Data".
       </div>
     </div>
   </div>
@@ -315,17 +313,17 @@
       placeholder="CFO"
     >
 
-    <button id="refresh">
-      Refresh Data
-    </button>
-
     <button id="searchTarget">
       Find Target Person
     </button>
+
+    <div id="targetSearchResults" style="margin-top:10px;"></div>
   </div>
 
   <div class="section">
     <div class="section-title">Warm Path</div>
+
+    <div id="selectedTargetBadge" style="margin:8px 0; padding:8px 10px; border:1px solid #b8c9e8; border-radius:6px; background:#eef4ff; font-size:12px; display:none;"></div>
 
     <label for="pathTarget">
       Warm path target URL
@@ -339,16 +337,20 @@
     <button id="findPath">
       Find Warm Path
     </button>
-     <button id="explainPath">
-    Explain Path
-  </button>
+    <button id="explainPath">
+      Explain Path
+    </button>
     <button id="searchNetwork">
       Search Network
     </button>
-
+    <button id="refresh">
+      Refresh Data
+    </button>
     <button id="viewGraph">
       View Graph
     </button>
+
+    <div id="pathResults" style="margin-top:10px;"></div>
   </div>
 
   <script src="popup.js"></script>

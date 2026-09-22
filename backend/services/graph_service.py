@@ -208,6 +208,35 @@ class GraphService:
             "edges": edges,
         }
 
+    def resolve_node_id(self, graph: nx.DiGraph, query: str | None) -> str | None:
+        if not query or not isinstance(query, str):
+            return None
+        q = query.strip()
+        if not q:
+            return None
+        if q in graph:
+            return q
+        normalized = profile_node_id(q)
+        if normalized in graph:
+            return normalized
+
+        q_lower = q.casefold()
+        norm_lower = normalized.casefold()
+
+        # Iterate graph nodes to match profile_url, label, or case-insensitive node ID
+        for node_id, attrs in graph.nodes(data=True):
+            nid_str = str(node_id)
+            if nid_str.casefold() == norm_lower or nid_str.casefold() == q_lower:
+                return nid_str
+            p_url = str(attrs.get("profile_url") or "")
+            if p_url:
+                if p_url.casefold() == q_lower or profile_node_id(p_url).casefold() == norm_lower:
+                    return nid_str
+            lbl = str(attrs.get("label") or "")
+            if lbl and (lbl.casefold() == q_lower or lbl.casefold() == norm_lower):
+                return nid_str
+        return None
+
     def find_paths(
         self,
         owner_id: str,
@@ -220,16 +249,19 @@ class GraphService:
         start_time = time.perf_counter()
         graph = self.get_owner_graph(owner_id, auth_context, load_network_fn)
 
-        if source_id not in graph:
+        resolved_source = self.resolve_node_id(graph, source_id) or source_id
+        resolved_target = self.resolve_node_id(graph, target_id) or target_id
+
+        if resolved_source not in graph:
             raise HTTPException(
                 status_code=404,
-                detail="Source node not found."
+                detail=f"Source node '{source_id}' not found in graph."
             )
 
-        if target_id not in graph:
+        if resolved_target not in graph:
             raise HTTPException(
                 status_code=404,
-                detail="Target node not found."
+                detail=f"Target node '{target_id}' not found in graph."
             )
 
         effective_cutoff = min(max(cutoff, 0), 4)
@@ -238,8 +270,8 @@ class GraphService:
             raw_paths = list(
                 nx.all_simple_paths(
                     graph,
-                    source_id,
-                    target_id,
+                    resolved_source,
+                    resolved_target,
                     cutoff=effective_cutoff
                 )
             )
@@ -262,8 +294,8 @@ class GraphService:
 
         return {
             "owner_id": owner_id,
-            "source": source_id,
-            "target": target_id,
+            "source": resolved_source,
+            "target": resolved_target,
             "paths": ranked[:3],
         }
 
@@ -277,9 +309,12 @@ class GraphService:
         auth_context: AuthContext | None = None,
         load_network_fn: Callable[[str, AuthContext | None], dict[str, Any] | None] | None = None,
     ) -> dict[str, Any]:
+        graph = self.get_owner_graph(owner_id, auth_context, load_network_fn)
+
         if not path:
             effective_source = source_id or owner_id
-            if not target_id:
+            resolved_target = self.resolve_node_id(graph, target_id) if target_id else None
+            if not resolved_target:
                 raise HTTPException(
                     status_code=400,
                     detail="target_id is required"
@@ -288,7 +323,7 @@ class GraphService:
             path_result = self.find_paths(
                 owner_id=owner_id,
                 source_id=effective_source,
-                target_id=target_id,
+                target_id=resolved_target,
                 cutoff=cutoff,
                 auth_context=auth_context,
                 load_network_fn=load_network_fn,
@@ -310,32 +345,41 @@ class GraphService:
                 detail="A valid path must contain at least two nodes"
             )
 
-        graph = self.get_owner_graph(owner_id, auth_context, load_network_fn)
         statements = []
 
         for source, target in zip(path, path[1:]):
             edge = graph.get_edge_data(source, target)
             if not edge:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Path edge not found: {source} -> {target}"
-                )
+                # Check resolved node IDs
+                s_res = self.resolve_node_id(graph, source) or source
+                t_res = self.resolve_node_id(graph, target) or target
+                edge = graph.get_edge_data(s_res, t_res)
 
-            if edge.get("relationship") == "KNOWS":
+            source_name = graph.nodes[source].get("label") if source in graph else source
+            if source == owner_id or source_name == owner_id:
+                source_name = "You"
+            target_name = graph.nodes[target].get("label") if target in graph else target
+
+            if not edge:
+                statements.append(f"{source_name} is connected to {target_name}.")
+                continue
+
+            rel = edge.get("relationship", "KNOWS")
+            if rel == "KNOWS":
                 statements.append(
-                    f"{source} is directly connected to {target}."
+                    f"{source_name} is directly connected to {target_name}."
                 )
-            elif edge.get("relationship") == "OBSERVED_MUTUAL":
+            elif rel == "OBSERVED_MUTUAL":
                 mutual_name = (
                     edge.get("mutual_connection_name")
-                    or source
+                    or source_name
                 )
                 statements.append(
-                    f"{mutual_name} appears as a mutual connection for {target}."
+                    f"{mutual_name} appears as a mutual connection for {target_name}."
                 )
             else:
                 statements.append(
-                    f"{source} has observed relationship evidence for {target}."
+                    f"{source_name} has observed relationship evidence for {target_name}."
                 )
 
         hop_count = len(path) - 1
@@ -349,33 +393,61 @@ class GraphService:
             "explanation": explanation,
         }
 
-    def generate_graph_html(self, graph: nx.DiGraph) -> str | None:
-        if Network is None:
-            return None
+    def generate_graph_html(self, graph: nx.DiGraph) -> str:
+        if Network is not None:
+            try:
+                net = Network(
+                    height="800px",
+                    width="100%",
+                    directed=True
+                )
 
-        net = Network(
-            height="800px",
-            width="100%",
-            directed=True
-        )
+                for node_id, attrs in graph.nodes(data=True):
+                    label = attrs.get("label", node_id)
+                    net.add_node(
+                        node_id,
+                        label=label,
+                        title=str(attrs)
+                    )
 
-        for node_id, attrs in graph.nodes(data=True):
-            label = attrs.get("label", node_id)
-            net.add_node(
-                node_id,
-                label=label,
-                title=str(attrs)
-            )
+                for source, target, attrs in graph.edges(data=True):
+                    relationship = attrs.get("relationship", "KNOWS")
+                    strength = attrs.get("strength", 1.0)
+                    net.add_edge(
+                        source,
+                        target,
+                        label=relationship,
+                        value=strength,
+                        title=str(attrs)
+                    )
 
-        for source, target, attrs in graph.edges(data=True):
-            relationship = attrs.get("relationship", "KNOWS")
-            strength = attrs.get("strength", 1.0)
-            net.add_edge(
-                source,
-                target,
-                label=relationship,
-                value=strength,
-                title=str(attrs)
-            )
+                return net.generate_html()
+            except Exception:
+                pass
 
-        return net.generate_html()
+        # Fallback interactive HTML visualization using vis-network standalone CDN
+        nodes_list = [{"id": node_id, "label": attrs.get("label", node_id)} for node_id, attrs in graph.nodes(data=True)]
+        edges_list = [{"from": source, "to": target, "label": attrs.get("relationship", "KNOWS")} for source, target, attrs in graph.edges(data=True)]
+        nodes_json = json.dumps(nodes_list)
+        edges_json = json.dumps(edges_list)
+
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Warm Graph Network</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>#mynetwork {{ width: 100%; height: 800px; border: 1px solid lightgray; }}</style>
+</head>
+<body>
+    <div id="mynetwork"></div>
+    <script type="text/javascript">
+        var nodes = new vis.DataSet({nodes_json});
+        var edges = new vis.DataSet({edges_json});
+        var container = document.getElementById('mynetwork');
+        var data = {{ nodes: nodes, edges: edges }};
+        var options = {{ edges: {{ arrows: 'to' }} }};
+        var network = new vis.Network(container, data, options);
+    </script>
+</body>
+</html>"""

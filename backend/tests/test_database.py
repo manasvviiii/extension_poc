@@ -45,6 +45,7 @@ class DatabasePersistenceTests(unittest.TestCase):
     def test_schema_and_migration_create_fresh_database(self):
         migration_db = Database(f"sqlite:///{self.temp_dir / 'migration.db'}")
         config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+        config.set_main_option("script_location", str(Path(__file__).parents[1] / "db" / "migrations"))
         config.set_main_option("sqlalchemy.url", f"sqlite:///{self.temp_dir / 'migration.db'}")
         database_url = os.environ.pop("DATABASE_URL", None)
         try:
