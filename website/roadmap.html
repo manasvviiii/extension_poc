@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Product Roadmap — WarmGraph Engineering Journey</title>
+  <meta name="description" content="WarmGraph product roadmap, completed architecture, current development milestones, and future engineering release goals.">
+  <link rel="stylesheet" href="css/global.css">
+  <link rel="stylesheet" href="css/landing.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    .roadmap-section {
+      padding: 60px 0 100px;
+    }
+    .roadmap-timeline {
+      position: relative;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 40px 0;
+    }
+    .roadmap-timeline::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 24px;
+      width: 3px;
+      background: linear-gradient(180deg, var(--primary-blue) 0%, var(--accent-violet) 50%, rgba(255, 255, 255, 0.1) 100%);
+      box-shadow: 0 0 15px var(--primary-blue);
+    }
+    .roadmap-item {
+      position: relative;
+      padding-left: 72px;
+      margin-bottom: 48px;
+    }
+    .roadmap-node-badge {
+      position: absolute;
+      left: 13px;
+      top: 4px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--bg-dark);
+      border: 3px solid var(--text-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .roadmap-item.implemented .roadmap-node-badge {
+      border-color: var(--primary-blue);
+      background: var(--primary-blue);
+      box-shadow: 0 0 16px var(--primary-blue);
+    }
+    .roadmap-item.current .roadmap-node-badge {
+      border-color: var(--accent-violet);
+      background: var(--accent-violet);
+      box-shadow: 0 0 16px var(--accent-violet);
+      animation: pulse 2s infinite;
+    }
+    .roadmap-item.upcoming .roadmap-node-badge {
+      border-color: var(--text-dim);
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .roadmap-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      transition: all var(--transition-normal);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
+    }
+    .roadmap-card:hover {
+      border-color: var(--border-glass-active);
+      transform: translateY(-4px);
+    }
+    .roadmap-status-tag {
+      font-size: 0.8rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 12px;
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: var(--radius-full);
+    }
+    .tag-implemented {
+      background: rgba(56, 189, 248, 0.12);
+      color: var(--primary-blue);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+    .tag-current {
+      background: rgba(139, 92, 246, 0.15);
+      color: var(--accent-violet);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+    }
+    .tag-upcoming {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-dim);
+      border: 1px solid var(--border-glass);
+    }
+    .roadmap-card h3 {
+      font-size: 1.5rem;
+      margin-bottom: 12px;
+    }
+    .roadmap-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .roadmap-list-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.95rem;
+      color: var(--text-main);
+    }
+    .roadmap-list-item.checked svg {
+      stroke: var(--primary-blue);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header / Navigation -->
+  <header class="header">
+    <div class="container nav-container">
+      <a href="index.html" class="logo-link">
+        <div class="logo-badge">
+          <svg viewBox="0 0 24 24">
+            <circle cx="6" cy="6" r="3" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="12" cy="18" r="3" />
+            <path d="M8.5 7.5L15.5 7.5 M7.5 8.5L10.5 15.5 M16.5 8.5L13.5 15.5" stroke="currentColor" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <span class="logo-text">Warm<span>Graph</span></span>
+      </a>
+
+      <ul class="nav-links">
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="index.html#how-it-works" class="nav-link">How It Works</a></li>
+        <li><a href="knowledge.html" class="nav-link">Knowledge Hub</a></li>
+        <li><a href="roadmap.html" class="nav-link active">Roadmap</a></li>
+      </ul>
+
+      <div style="display: flex; align-items: center; gap: 16px;">
+        <a href="../extension/popup.html" class="nav-cta-btn">
+          <span>Get Extension</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </a>
+        <button class="mobile-toggle" aria-label="Toggle Navigation Menu">☰</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Roadmap Section -->
+  <section class="roadmap-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag">ENGINEERING ROADMAP</span>
+        <h2 class="section-title">Product & Engineering Milestones</h2>
+        <p class="subtext">Transparent tracking of our architecture milestones, active releases, and future roadmap.</p>
+      </div>
+
+      <div class="roadmap-timeline">
+        <!-- Section 1: Implemented -->
+        <div class="roadmap-item implemented">
+          <div class="roadmap-node-badge"></div>
+          <div class="roadmap-card">
+            <span class="roadmap-status-tag tag-implemented">✓ IMPLEMENTED</span>
+            <h3>Core Platform Architecture & Extension Foundation</h3>
+            <p style="color: var(--text-muted);">Production implementation of core extension acquisition and developer inspection suite.</p>
+
+            <ul class="roadmap-list">
+              <li class="roadmap-list-item checked">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span><strong>Persistent acquisition:</strong> Background service worker & session state persistence</span>
+              </li>
+              <li class="roadmap-list-item checked">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span><strong>Background sessions:</strong> Seamless session recovery across browser restarts</span>
+              </li>
+              <li class="roadmap-list-item checked">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span><strong>Humanized overlay:</strong> 20–25s human-paced DOM observation feedback overlay</span>
+              </li>
+              <li class="roadmap-list-item checked">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span><strong>Developer QA dashboard:</strong> Internal inspection console for extraction quality & metadata</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Section 2: Current -->
+        <div class="roadmap-item current">
+          <div class="roadmap-node-badge"></div>
+          <div class="roadmap-card">
+            <span class="roadmap-status-tag tag-current">● CURRENT PHASE</span>
+            <h3>Public SaaS Platform & Brand Identity</h3>
+            <p style="color: var(--text-muted);">Building the independent public facing product portal and documentation workspace.</p>
+
+            <ul class="roadmap-list">
+              <li class="roadmap-list-item checked">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span><strong>Public Website:</strong> Premium SaaS product identity landing, how it works, and showcase</span>
+              </li>
+              <li class="roadmap-list-item checked">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span><strong>Knowledge Hub:</strong> Interactive documentation portal and markdown technical journal</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Section 3: Upcoming -->
+        <div class="roadmap-item upcoming">
+          <div class="roadmap-node-badge"></div>
+          <div class="roadmap-card">
+            <span class="roadmap-status-tag tag-upcoming">○ UPCOMING MILESTONES</span>
+            <h3>Next-Generation Warm Path Algorithms</h3>
+            <p style="color: var(--text-muted);">Expanding network depth, AI scoring models, and institutional CRM connectivity.</p>
+
+            <ul class="roadmap-list">
+              <li class="roadmap-list-item">
+                <span style="color: var(--text-dim); font-weight: 700;">○</span>
+                <span><strong>2nd Degree Enrichment:</strong> Automated background resolution of mutual executive bridge nodes</span>
+              </li>
+              <li class="roadmap-list-item">
+                <span style="color: var(--text-dim); font-weight: 700;">○</span>
+                <span><strong>3rd Degree Discovery:</strong> Extended multi-hop graph traversal for high-value targets</span>
+              </li>
+              <li class="roadmap-list-item">
+                <span style="color: var(--text-dim); font-weight: 700;">○</span>
+                <span><strong>Warm Path Scoring V2:</strong> ML-based intro conversion likelihood modeling</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-bottom">
+        <span>&copy; 2026 WarmGraph Inc. Engineering Roadmap.</span>
+        <a href="index.html" style="color: var(--primary-blue); text-decoration: none;">← Back to Main Website</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/app.js"></script>
+  <script src="js/animations.js"></script>
+</body>
+</html>

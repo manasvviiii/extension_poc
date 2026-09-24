@@ -1,0 +1,215 @@
+/* Knowledge Hub Documentation Stylesheet (knowledge.css) */
+
+.knowledge-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 40px;
+  padding: 40px 0 100px;
+  min-height: 80vh;
+}
+
+/* Left Sticky Sidebar */
+.knowledge-sidebar {
+  position: sticky;
+  top: 96px;
+  height: calc(100vh - 120px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding-right: 16px;
+  border-right: 1px solid var(--border-glass);
+}
+
+.search-box-wrapper {
+  position: relative;
+}
+
+.search-input {
+  width: 100%;
+  padding: 12px 16px 12px 40px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  color: var(--text-main);
+  font-size: 0.9rem;
+  outline: none;
+  transition: all var(--transition-fast);
+}
+
+.search-input:focus {
+  border-color: var(--primary-blue);
+  box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
+}
+
+.search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  stroke: var(--text-muted);
+}
+
+.category-nav-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.category-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.category-item {
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.category-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+.category-item.active {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--primary-blue);
+  font-weight: 600;
+  border-left: 3px solid var(--primary-blue);
+}
+
+/* Article Content Container */
+.doc-article-container {
+  background: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-lg);
+  padding: 48px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+}
+
+.doc-article-header {
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.doc-article-title {
+  font-size: 2.25rem;
+  line-height: 1.25;
+  margin-bottom: 12px;
+}
+
+.doc-article-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.doc-body {
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: #cbd5e1;
+}
+
+.doc-body h1, .doc-body h2, .doc-body h3 {
+  color: var(--text-main);
+  margin: 32px 0 16px;
+  letter-spacing: -0.02em;
+}
+
+.doc-body h1 { font-size: 2rem; }
+.doc-body h2 { font-size: 1.5rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05); padding-bottom: 8px; }
+.doc-body h3 { font-size: 1.2rem; }
+
+.doc-body p { margin-bottom: 16px; }
+
+.doc-body ul, .doc-body ol {
+  margin: 0 0 20px 24px;
+}
+
+.doc-body li {
+  margin-bottom: 8px;
+}
+
+/* Callouts */
+.doc-callout {
+  padding: 16px 20px;
+  border-radius: var(--radius-md);
+  margin: 24px 0;
+  border-left: 4px solid;
+  font-size: 0.95rem;
+}
+
+.doc-callout-note {
+  background: rgba(56, 189, 248, 0.08);
+  border-color: var(--primary-blue);
+  color: #e0f2fe;
+}
+
+.doc-callout-important {
+  background: rgba(139, 92, 246, 0.08);
+  border-color: var(--accent-violet);
+  color: #f3e8ff;
+}
+
+.doc-callout-warning {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: #f59e0b;
+  color: #fef3c7;
+}
+
+/* Code Blocks */
+.doc-code-block {
+  background: rgba(7, 11, 26, 0.9);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  font-family: "Fira Code", Monaco, Consolas, monospace;
+  font-size: 0.9rem;
+  overflow-x: auto;
+  margin: 24px 0;
+  color: #38bdf8;
+}
+
+/* Tables */
+.doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 24px 0;
+  font-size: 0.95rem;
+}
+
+.doc-table th, .doc-table td {
+  padding: 12px 16px;
+  border: 1px solid var(--border-glass);
+  text-align: left;
+}
+
+.doc-table th {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .knowledge-layout { grid-template-columns: 1fr; }
+  .knowledge-sidebar { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border-glass); padding-bottom: 24px; }
+  .doc-article-container { padding: 24px; }
+}

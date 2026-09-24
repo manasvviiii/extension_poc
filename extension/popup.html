@@ -12,90 +12,262 @@
     }
 
     body {
-      width: 420px;
-      min-height: 560px;
+      width: 400px;
+      min-height: 540px;
       margin: 0;
       padding: 16px;
-      font-family: Arial, sans-serif;
-      background: #ffffff;
-      color: #111111;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
     }
 
-    h2 {
-      margin: 0 0 4px;
-      font-size: 19px;
+    .header-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: #0f172a;
+      letter-spacing: -0.4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .brand-title span {
+      color: #0A66C2;
     }
 
     .subtitle {
-      margin: 0 0 14px;
-      color: #666;
-      font-size: 12px;
-    }
-
-    .section {
-      margin-bottom: 14px;
-      padding: 12px;
-      border: 1px solid #ddd;
-      border-radius: 8px;
-      background: #fafafa;
-    }
-
-    .section-title {
-      margin-bottom: 9px;
-      font-size: 13px;
-      font-weight: 700;
+      margin: 2px 0 0;
+      color: #64748b;
+      font-size: 11px;
+      font-weight: 500;
     }
 
     #identity {
       margin-bottom: 12px;
-      padding: 9px 10px;
+      padding: 6px 10px;
       border-radius: 6px;
       font-size: 11px;
-      line-height: 1.45;
-      white-space: pre-line;
+      line-height: 1.4;
     }
 
     #identity.detected {
-      background: #e8f4ea;
-      border: 1px solid #b6dcbc;
-      color: #1e4620;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      color: #166534;
     }
 
     #identity.pending {
-      background: #fdf3e3;
-      border: 1px solid #f0d9a6;
-      color: #6b4e00;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      color: #92400e;
+    }
+
+    .section {
+      margin-bottom: 14px;
+      padding: 14px;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
+
+    .section-title {
+      margin-bottom: 10px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Product-Grade Quiet Hero Card */
+    #acquisitionContainer {
+      display: block;
+      margin-bottom: 0;
+      padding: 20px 16px;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 2px 8px rgba(10, 102, 194, 0.06);
+      text-align: center;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #0A66C2;
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    #heroCountDisplay {
+      font-size: 42px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.0;
+      letter-spacing: -1.5px;
+      margin: 4px 0 2px;
+      transition: all 0.3s ease;
+    }
+
+    .hero-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #64748b;
+      margin-bottom: 6px;
+      text-transform: lowercase;
+    }
+
+    #heroSecondaryText {
+      font-size: 11px;
+      color: #94a3b8;
+      font-weight: 500;
+      margin-bottom: 12px;
+    }
+
+    #acquisitionStatusTitle {
+      font-weight: 700;
+      color: #0f172a;
+      font-size: 16px;
+      margin: 12px 0 6px;
+      letter-spacing: -0.3px;
+    }
+
+    #acquisitionInstruction {
+      font-size: 12px;
+      color: #475569;
+      margin-bottom: 12px;
+      line-height: 1.45;
+    }
+
+    #acquisitionProgressBarContainer {
+      width: 100%;
+      height: 6px;
+      background: #f1f5f9;
+      border-radius: 3px;
+      overflow: hidden;
+      margin: 10px 0;
+    }
+
+    #acquisitionProgressBar {
+      width: 0%;
+      height: 100%;
+      background: #0A66C2;
+      border-radius: 3px;
+      transition: width 0.4s ease;
+    }
+
+    #acquisitionRemainingText {
+      font-size: 11px;
+      color: #64748b;
+      margin-bottom: 12px;
+      font-weight: 500;
+    }
+
+    .reassurance-banner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      margin-top: 12px;
+      padding: 9px 12px;
+      border-radius: 8px;
+      background: #f0f7ff;
+      border: 1px solid #dbeafe;
+      color: #0369a1;
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.35;
+      text-align: center;
+    }
+
+    .primary-action-btn {
+      width: 100%;
+      padding: 10px 14px;
+      margin-top: 12px;
+      background: #0A66C2;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 2px 4px rgba(10, 102, 194, 0.2);
+      transition: background 0.15s ease;
+    }
+
+    .primary-action-btn:hover {
+      background: #084e96;
+    }
+
+    .action-controls-row {
+      margin-top: 10px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
     }
 
     button {
       width: 100%;
-      padding: 10px 12px;
+      padding: 9px 12px;
       margin-bottom: 8px;
-      border: 1px solid #aaa;
-      border-radius: 6px;
-      background: #f5f5f5;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #0f172a;
       cursor: pointer;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
+      transition: all 0.15s ease;
     }
 
     button:hover {
-      background: #e9e9e9;
+      background: #f8fafc;
+      border-color: #94a3b8;
+    }
+
+    #syncNetworkBtn {
+      width: auto;
+      padding: 6px 14px;
+      margin: 0;
+      background: #0A66C2;
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    #syncNetworkBtn:hover {
+      background: #084e96;
     }
 
     #extract {
-      background: #111;
+      background: #0f172a;
       color: white;
-      border-color: #111;
+      border-color: #0f172a;
     }
 
     #extract:hover {
-      background: #333;
+      background: #1e293b;
     }
 
     #send {
-      background: #eef4ff;
-      border-color: #b8c9e8;
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: #1d4ed8;
     }
 
     label {
@@ -103,35 +275,37 @@
       margin: 8px 0 4px;
       font-size: 11px;
       font-weight: 600;
+      color: #475569;
     }
 
     input,
     select {
       width: 100%;
-      padding: 8px;
-      border: 1px solid #bbb;
-      border-radius: 5px;
+      padding: 8px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
       font-size: 12px;
       background: white;
+      color: #0f172a;
     }
 
-    hr {
-      border: 0;
-      border-top: 1px solid #ddd;
-      margin: 14px 0;
+    input:focus,
+    select:focus {
+      outline: none;
+      border-color: #0A66C2;
     }
 
     #output {
       margin-top: 10px;
-      max-height: 360px;
+      max-height: 320px;
       overflow-y: auto;
     }
 
     .status-box {
-      padding: 10px;
-      border: 1px solid #ddd;
-      border-radius: 7px;
-      background: #f7f7f7;
+      padding: 10px 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      background: #f8fafc;
       font-size: 12px;
       line-height: 1.45;
       white-space: pre-wrap;
@@ -147,8 +321,8 @@
     .summary-card {
       flex: 1;
       padding: 9px;
-      border: 1px solid #ddd;
-      border-radius: 6px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
       background: white;
       text-align: center;
     }
@@ -157,20 +331,21 @@
       display: block;
       font-size: 18px;
       font-weight: 700;
+      color: #0f172a;
     }
 
     .summary-label {
       display: block;
       margin-top: 2px;
-      color: #666;
+      color: #64748b;
       font-size: 10px;
     }
 
     .record {
       margin-bottom: 9px;
       padding: 10px;
-      border: 1px solid #ddd;
-      border-radius: 7px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
       background: white;
     }
 
@@ -181,11 +356,12 @@
     .record-name {
       font-size: 13px;
       font-weight: 700;
+      color: #0f172a;
     }
 
     .record-headline {
       margin-top: 3px;
-      color: #555;
+      color: #475569;
       font-size: 11px;
       line-height: 1.35;
     }
@@ -201,26 +377,29 @@
       display: inline-block;
       padding: 3px 6px;
       border-radius: 10px;
-      background: #f0f0f0;
-      color: #444;
+      background: #f1f5f9;
+      color: #475569;
       font-size: 10px;
+      font-weight: 500;
     }
 
     .mutual {
       margin-top: 7px;
       padding-top: 7px;
-      border-top: 1px solid #eee;
+      border-top: 1px solid #f1f5f9;
       font-size: 11px;
+      color: #334155;
     }
 
     .mutual strong {
       font-weight: 700;
+      color: #0f172a;
     }
 
     .record-link {
       display: block;
       margin-top: 7px;
-      color: #2457a6;
+      color: #0A66C2;
       font-size: 10px;
       text-decoration: none;
       overflow: hidden;
@@ -229,128 +408,170 @@
     }
 
     .empty {
-      color: #777;
+      color: #64748b;
       text-align: center;
+    }
+
+    .debug-toggle-btn {
+      background: none !important;
+      border: none !important;
+      color: #64748b !important;
+      font-size: 11px !important;
+      font-weight: 500 !important;
+      cursor: pointer !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      width: auto !important;
+      text-decoration: underline;
+    }
+
+    .debug-toggle-btn:hover {
+      color: #0f172a !important;
     }
   </style>
 </head>
 
 <body>
 
-  <h2>Warm Graph</h2>
-  <p class="subtitle">Warm-introduction network</p>
+  <div class="header-container">
+    <div>
+      <div class="brand-title"><span>✦</span> WarmGraph</div>
+      <p class="subtitle">Warm-introduction network platform</p>
+    </div>
+  </div>
 
   <div id="identity" class="pending">
     Detecting your LinkedIn identity...
   </div>
 
   <div class="section">
-    <div class="section-title">Connections Acquisition</div>
-
-    <div id="acquisitionContainer" style="display:block; margin-bottom:10px; padding:14px; border:1px solid #0A66C2; border-radius:8px; background:#f0f7ff;">
-      <div id="acquisitionStatusTitle" style="font-weight:700; color:#0A66C2; font-size:14px; margin-bottom:4px;">
-        ● Collecting connections...
-      </div>
-      <div id="acquisitionCountDisplay" style="font-size:22px; font-weight:700; color:#111; margin:6px 0;">
-        0 / 0 connections
-      </div>
-      <div id="acquisitionInstruction" style="font-size:12px; color:#444; margin-bottom:8px; line-height:1.4;">
-        Automatically acquiring dataset from LinkedIn connections page...
+    <div id="acquisitionContainer">
+      <div id="acquisitionStatusBadge" class="status-badge">
+        ● Building network
       </div>
 
-      <div id="acquisitionProgressBarContainer" style="width:100%; height:8px; background:#d0e2ff; border-radius:4px; overflow:hidden; margin:8px 0;">
-        <div id="acquisitionProgressBar" style="width:0%; height:100%; background:#0A66C2; transition:width 0.3s ease;"></div>
-      </div>
-      <div id="acquisitionRemainingText" style="font-size:11px; color:#555; margin-bottom:8px; font-weight:600;">
-        0 connections remaining
+      <div id="heroCountDisplay">0</div>
+      <div id="heroCountLabel" class="hero-label">connections</div>
+      <div id="heroSecondaryText">0 connections discovered</div>
+
+      <div id="acquisitionStatusTitle">
+        Building your network
       </div>
 
-      <div style="margin-top:8px; padding-top:8px; border-top:1px solid #b8c9e8; display:flex; justify-content:space-between; align-items:center;">
-        <strong id="syncStatusBadge" style="color:#0A66C2; font-size:12px;">Backend Sync: Pending</strong>
-        <button id="syncNetworkBtn" type="button" style="display:none; width:auto; padding:6px 12px; margin:0; background:#0A66C2; color:white; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer;">Sync Network</button>
+      <div id="acquisitionInstruction">
+        WarmGraph is discovering your connections in the background.
       </div>
 
-      <div style="margin-top:8px; text-align:right;">
-        <button id="toggleDebugTelemetryBtn" type="button" style="background:none; border:none; color:#666; font-size:10px; cursor:pointer; text-decoration:underline; padding:0;">[Debug Mode]</button>
+      <div id="acquisitionProgressBarContainer">
+        <div id="acquisitionProgressBar"></div>
       </div>
 
-      <div id="telemetryDiagnostics" style="margin-top:8px; padding-top:6px; border-top:1px solid #cce0ff; font-family:monospace; font-size:10px; color:#333; display:none; white-space:pre-wrap;">
+      <div id="acquisitionRemainingText" style="display:none;">
+        0 connections catalogued
+      </div>
+
+      <!-- Hidden compatibility element for legacy count checks -->
+      <div id="acquisitionCountDisplay" style="display:none;">0 connections found</div>
+
+      <div id="acquisitionReassuranceBanner" class="reassurance-banner">
+        <span>🔒 You can keep browsing — WarmGraph is working quietly in the background.</span>
+      </div>
+
+      <div id="networkReadyCtaSection" style="display:none;">
+        <button id="openWarmGraphWorkspaceBtn" type="button" class="primary-action-btn">Open WarmGraph Research</button>
+      </div>
+
+      <div class="action-controls-row">
+        <div>
+          <span id="syncStatusBadge" style="display:none;"></span>
+          <button id="syncNetworkBtn" type="button" style="display:none;">Sync Network</button>
+        </div>
+      </div>
+
+      <div style="margin-top:14px; display:flex; justify-content:space-between; align-items:center;">
+        <button id="openDevDashboardBtn" type="button" class="debug-toggle-btn">[ Developer Extraction Dashboard ↗ ]</button>
+        <button id="toggleDebugTelemetryBtn" type="button" class="debug-toggle-btn">[ Developer Diagnostics ▾ ]</button>
+      </div>
+
+      <div id="telemetryDiagnostics" style="margin-top:8px; padding:10px; border-top:1px solid #cbd5e1; font-family:monospace; font-size:10px; color:#1e293b; background:#f8fafc; border-radius:6px; display:none; white-space:pre-wrap; overflow-x:auto; text-align:left;">
       </div>
     </div>
   </div>
 
-  <div class="section">
-    <div class="section-title">Extraction Preview</div>
-    <div style="margin-bottom:8px;">
-      <input id="searchConnectionsInput" type="text" placeholder="Search extracted connections..." style="width:100%; padding:6px 8px; font-size:12px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;" />
-    </div>
+  <div id="researchContainer">
+    <div class="section">
+      <div class="section-title">Extraction Preview</div>
+      <div style="margin-bottom:8px;">
+        <input id="searchConnectionsInput" type="text" placeholder="Search extracted connections..." />
+      </div>
 
-    <div id="output">
-      <div class="status-box empty">
-        No data extracted yet.
+      <div id="output">
+        <div class="status-box empty">
+          No data extracted yet.
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="section">
-    <div class="section-title">Target Search</div>
+    <div class="section">
+      <div class="section-title">Target Search</div>
 
-    <label for="company">Target company</label>
-    <input
-      id="company"
-      placeholder="Example Corp"
-    >
+      <label for="company">Target company</label>
+      <input
+        id="company"
+        placeholder="Example Corp"
+      >
 
-    <label for="dealSide">Deal side</label>
-    <select id="dealSide">
-      <option value="sell_side">Sell-side</option>
-      <option value="buy_side">Buy-side</option>
-    </select>
+      <label for="dealSide">Deal side</label>
+      <select id="dealSide">
+        <option value="sell_side">Sell-side</option>
+        <option value="buy_side">Buy-side</option>
+      </select>
 
-    <label for="targetRole">Target role (optional)</label>
-    <input
-      id="targetRole"
-      placeholder="CFO"
-    >
+      <label for="targetRole">Target role (optional)</label>
+      <input
+        id="targetRole"
+        placeholder="CFO"
+      >
 
-    <button id="searchTarget">
-      Find Target Person
-    </button>
+      <button id="searchTarget">
+        Find Target Person
+      </button>
 
-    <div id="targetSearchResults" style="margin-top:10px;"></div>
-  </div>
+      <div id="targetSearchResults" style="margin-top:10px;"></div>
+    </div>
 
-  <div class="section">
-    <div class="section-title">Warm Path</div>
+    <div class="section">
+      <div class="section-title">Warm Path</div>
 
-    <div id="selectedTargetBadge" style="margin:8px 0; padding:8px 10px; border:1px solid #b8c9e8; border-radius:6px; background:#eef4ff; font-size:12px; display:none;"></div>
+      <div id="selectedTargetBadge" style="margin:8px 0; padding:8px 10px; border:1px solid #b8c9e8; border-radius:6px; background:#eef4ff; font-size:12px; display:none;"></div>
 
-    <label for="pathTarget">
-      Warm path target URL
-    </label>
+      <label for="pathTarget">
+        Warm path target URL
+      </label>
 
-    <input
-      id="pathTarget"
-      placeholder="https://www.linkedin.com/in/..."
-    >
+      <input
+        id="pathTarget"
+        placeholder="https://www.linkedin.com/in/..."
+      >
 
-    <button id="findPath">
-      Find Warm Path
-    </button>
-    <button id="explainPath">
-      Explain Path
-    </button>
-    <button id="searchNetwork">
-      Search Network
-    </button>
-    <button id="refresh">
-      Refresh Data
-    </button>
-    <button id="viewGraph">
-      View Graph
-    </button>
+      <button id="findPath">
+        Find Warm Path
+      </button>
+      <button id="explainPath">
+        Explain Path
+      </button>
+      <button id="searchNetwork">
+        Search Network
+      </button>
+      <button id="refresh">
+        Refresh Data
+      </button>
+      <button id="viewGraph">
+        View Graph
+      </button>
 
-    <div id="pathResults" style="margin-top:10px;"></div>
+      <div id="pathResults" style="margin-top:10px;"></div>
+    </div>
   </div>
 
   <script src="popup.js"></script>

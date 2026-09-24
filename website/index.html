@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WarmGraph — Relationship Intelligence & Warm Path Discovery</title>
+  <meta name="description" content="WarmGraph transforms your LinkedIn network into a relationship graph that helps discover genuine warm introductions for investment banking and corporate development.">
+  <link rel="stylesheet" href="css/global.css">
+  <link rel="stylesheet" href="css/landing.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Sticky Transparent/Blurred Navbar -->
+  <header class="header">
+    <div class="container nav-container">
+      <a href="index.html" class="logo-link">
+        <div class="logo-badge">
+          <svg viewBox="0 0 24 24">
+            <circle cx="6" cy="6" r="3" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="12" cy="18" r="3" />
+            <path d="M8.5 7.5L15.5 7.5 M7.5 8.5L10.5 15.5 M16.5 8.5L13.5 15.5" stroke="currentColor" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <span class="logo-text">Warm<span>Graph</span></span>
+      </a>
+
+      <ul class="nav-links">
+        <li><a href="index.html" class="nav-link active">Home</a></li>
+        <li><a href="#how-it-works" class="nav-link">How It Works</a></li>
+        <li><a href="knowledge.html" class="nav-link">Knowledge Hub</a></li>
+        <li><a href="roadmap.html" class="nav-link">Roadmap</a></li>
+      </ul>
+
+      <div style="display: flex; align-items: center; gap: 16px;">
+        <a href="../extension/popup.html" class="nav-cta-btn">
+          <span>Get Extension</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </a>
+        <button class="mobile-toggle" aria-label="Toggle Navigation Menu">☰</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <section class="hero-section">
+    <div class="container hero-grid">
+      <div class="hero-content">
+        <div class="hero-pill">
+          <span class="hero-pill-pulse"></span>
+          <span>RELATIONSHIP INTELLIGENCE PLATFORM</span>
+        </div>
+        <h1 class="hero-title">Find the <span class="text-gradient">warmest path</span> to anyone.</h1>
+        <p class="subtext">
+          WarmGraph transforms your LinkedIn network into a relationship graph that helps discover genuine warm introductions for investment banking and corporate development.
+        </p>
+        <div class="hero-actions">
+          <a href="../extension/popup.html" class="btn-primary">
+            <span>Get Extension</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+          <a href="#showcase" class="btn-secondary">
+            <span>Watch Demo</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- Right Side: Animated Glowing Dashboard Mockup -->
+      <div class="hero-mockup-wrapper">
+        <div class="hero-mockup-glow"></div>
+        <div class="glass-card-mockup">
+          <div class="mockup-header">
+            <div class="mockup-dots">
+              <span class="mockup-dot dot-red"></span>
+              <span class="mockup-dot dot-yellow"></span>
+              <span class="mockup-dot dot-green"></span>
+            </div>
+            <span class="mockup-title">Warm Path Finder • Relationship Graph</span>
+          </div>
+
+          <div class="graph-canvas">
+            <svg class="graph-svg-lines">
+              <line x1="18%" y1="80%" x2="42%" y2="52%" stroke="rgba(56, 189, 248, 0.4)" stroke-width="2" stroke-dasharray="4" />
+              <line x1="42%" y1="52%" x2="68%" y2="28%" stroke="rgba(139, 92, 246, 0.5)" stroke-width="2" />
+              <line x1="68%" y1="28%" x2="78%" y2="58%" stroke="rgba(56, 189, 248, 0.6)" stroke-width="2.5" />
+            </svg>
+
+            <div class="graph-nodes-container">
+              <div class="node-item node-you">
+                <div class="node-avatar">You</div>
+                <span>Alex Mercer</span>
+              </div>
+
+              <div class="node-item node-bridge1">
+                <div class="node-avatar">SJ</div>
+                <span>Sarah Jenkins</span>
+              </div>
+
+              <div class="node-item node-bridge2">
+                <div class="node-avatar">DV</div>
+                <span>David Vance</span>
+              </div>
+
+              <div class="node-item node-target">
+                <div class="node-avatar">ER</div>
+                <span>Elena Rostova</span>
+              </div>
+            </div>
+
+            <div class="path-badge-popup">
+              <div class="path-info">
+                <span class="path-label">Recommended Warm Intro</span>
+                <span class="path-desc">You → Sarah Jenkins → Elena Rostova</span>
+              </div>
+              <span class="path-score">94/100 Warm Score</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Trust Section -->
+  <section class="trust-strip">
+    <div class="container trust-grid">
+      <div class="trust-item">
+        <div class="trust-number text-blue-gradient">206+</div>
+        <div class="trust-label">Connections Mapped</div>
+      </div>
+      <div class="trust-item">
+        <div class="trust-number text-blue-gradient">100%</div>
+        <div class="trust-label">Relationship Evidence</div>
+      </div>
+      <div class="trust-item">
+        <div class="trust-number text-blue-gradient">3-Hop</div>
+        <div class="trust-label">Warm Introductions</div>
+      </div>
+      <div class="trust-item">
+        <div class="trust-number text-blue-gradient">Sub-sec</div>
+        <div class="trust-label">Graph Intelligence</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Works Section -->
+  <section id="how-it-works" class="section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag">HOW IT WORKS</span>
+        <h2 class="section-title">Three Steps to Unlocking Closed Networks</h2>
+        <p class="subtext">WarmGraph seamlessly overlays your browser without interrupting your browsing flow.</p>
+      </div>
+
+      <div class="steps-grid">
+        <!-- Card 1 -->
+        <div class="step-card">
+          <span class="step-number">01</span>
+          <div class="step-icon">
+            <svg viewBox="0 0 24 24"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+          </div>
+          <h3 class="step-title">Build Your Network</h3>
+          <p class="step-desc">
+            The Chrome extension quietly maps your LinkedIn connections and interaction context using humanized 20–25s pacing.
+          </p>
+        </div>
+
+        <!-- Card 2 -->
+        <div class="step-card">
+          <span class="step-number">02</span>
+          <div class="step-icon">
+            <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          </div>
+          <h3 class="step-title">Generate the Graph</h3>
+          <p class="step-desc">
+            WarmGraph organizes people, companies, mutual deals, and relationship evidence into an optimized directed graph.
+          </p>
+        </div>
+
+        <!-- Card 3 -->
+        <div class="step-card">
+          <span class="step-number">03</span>
+          <div class="step-icon">
+            <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          </div>
+          <h3 class="step-title">Discover Warm Introductions</h3>
+          <p class="step-desc">
+            Find the strongest, highest-trust warm introduction path to any target executive or decision-maker.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Product Showcase Section -->
+  <section id="showcase" class="showcase-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag">PRODUCT SHOWCASE</span>
+        <h2 class="section-title">Built for High-Stakes Deal Sourcing</h2>
+        <p class="subtext">Explore visual mockups of WarmGraph's primary intelligence modules.</p>
+      </div>
+
+      <!-- Showcase Tabs Navigation -->
+      <div class="showcase-tabs">
+        <button class="showcase-tab active" data-tab="tab-graph">Relationship Graph</button>
+        <button class="showcase-tab" data-tab="tab-evidence">Evidence Explorer</button>
+        <button class="showcase-tab" data-tab="tab-paths">Warm Paths</button>
+        <button class="showcase-tab" data-tab="tab-hub">Research Workspace</button>
+      </div>
+
+      <!-- Showcase Display Panels -->
+      <div class="showcase-display">
+        <!-- Tab 1: Graph -->
+        <div id="tab-graph" class="showcase-content-panel active">
+          <div class="showcase-info">
+            <h3 class="text-gradient">Relationship Graph</h3>
+            <p>Interactive network mapping showing connection density, executive clusters, and bridge nodes.</p>
+            <ul class="showcase-list">
+              <li class="showcase-list-item">
+                <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>Real-time node weighting and bridge node highlights</span>
+              </li>
+              <li class="showcase-list-item">
+                <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>Filtered view by industry, deal involvement, or connection strength</span>
+              </li>
+            </ul>
+          </div>
+          <div class="showcase-preview-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-glass); padding-bottom: 12px;">
+              <span style="font-weight: 700; color: var(--primary-blue);">Graph Topology View</span>
+              <span style="font-size: 0.8rem; color: var(--text-dim);">206 Nodes • 412 Edges</span>
+            </div>
+            <div class="preview-row">
+              <div>
+                <strong style="color: #fff; display: block; font-size: 0.9rem;">Sequoia & Accel Cluster</strong>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">48 Shared Connections</span>
+              </div>
+              <span style="background: rgba(56,189,248,0.2); color: var(--primary-blue); padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 700;">Density: High</span>
+            </div>
+            <div class="preview-row">
+              <div>
+                <strong style="color: #fff; display: block; font-size: 0.9rem;">Goldman M&A Network</strong>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">32 Senior Directors</span>
+              </div>
+              <span style="background: rgba(139,92,246,0.2); color: var(--accent-violet); padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 700;">Bridge Nodes: 7</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Evidence Explorer -->
+        <div id="tab-evidence" class="showcase-content-panel">
+          <div class="showcase-info">
+            <h3 class="text-gradient">Evidence Explorer</h3>
+            <p>Inspect extracted raw profile metadata, mutual evidence factors, and interaction recency.</p>
+            <ul class="showcase-list">
+              <li class="showcase-list-item">
+                <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>Audit duplicate profiles and field completeness</span>
+              </li>
+              <li class="showcase-list-item">
+                <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>Validate connection proofs and co-location data</span>
+              </li>
+            </ul>
+          </div>
+          <div class="showcase-preview-card">
+            <div class="preview-row">
+              <span>Profile evidence: <strong>Elena Rostova</strong></span>
+              <span style="color: #10b981; font-weight: 700;">VERIFIED</span>
+            </div>
+            <div class="preview-row">
+              <span>Mutual connection proof: <strong>Sarah Jenkins (0.92 weight)</strong></span>
+              <span style="color: #10b981; font-weight: 700;">CONFIRMED</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Warm Paths -->
+        <div id="tab-paths" class="showcase-content-panel">
+          <div class="showcase-info">
+            <h3 class="text-gradient">Warm Paths</h3>
+            <p>Compute multi-hop introduction paths ranked by connection trust and intro likelihood.</p>
+            <ul class="showcase-list">
+              <li class="showcase-list-item">
+                <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>Dijkstra-weighted shortest path computation</span>
+              </li>
+            </ul>
+          </div>
+          <div class="showcase-preview-card">
+            <div class="preview-row">
+              <div>
+                <span style="font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase;">Path #1</span>
+                <p style="color: #fff; font-weight: 600;">You → Sarah Jenkins → Elena Rostova</p>
+              </div>
+              <span style="background: rgba(56,189,248,0.25); color: var(--primary-blue); padding: 6px 12px; border-radius: 12px; font-weight: 700;">Score 94</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 4: Research Workspace -->
+        <div id="tab-hub" class="showcase-content-panel">
+          <div class="showcase-info">
+            <h3 class="text-gradient">Research Workspace</h3>
+            <p>Access WarmGraph's documentation, investment banking research, and algorithm specs.</p>
+          </div>
+          <div class="showcase-preview-card">
+            <div class="preview-row">
+              <span>Documentation Portal: <strong>Knowledge Hub</strong></span>
+              <a href="knowledge.html" style="color: var(--primary-blue); text-decoration: none; font-size: 0.85rem; font-weight: 600;">Explore Docs →</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Knowledge Hub Preview Section -->
+  <section class="section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag">ENGINEERING JOURNAL</span>
+        <h2 class="section-title">Engineering Journal & Knowledge Hub</h2>
+        <p class="subtext">Read technical articles on relationship graph algorithms, browser acquisition, and investment banking dynamics.</p>
+      </div>
+
+      <div class="hub-grid">
+        <!-- Card 1 -->
+        <a href="knowledge.html#architecture" class="hub-card">
+          <div class="hub-card-meta">
+            <span class="hub-tag">ARCHITECTURE</span>
+            <span class="hub-read-time">6 min read</span>
+          </div>
+          <h3 class="hub-title">WarmGraph Architecture</h3>
+          <p class="hub-snippet">High-level architectural overview of the client-first relationship intelligence platform.</p>
+        </a>
+
+        <!-- Card 2 -->
+        <a href="knowledge.html#acquisition" class="hub-card">
+          <div class="hub-card-meta">
+            <span class="hub-tag">ACQUISITION</span>
+            <span class="hub-read-time">8 min read</span>
+          </div>
+          <h3 class="hub-title">LinkedIn Acquisition Pipeline</h3>
+          <p class="hub-snippet">Human-paced 20–25s DOM observation protocol and non-interruptive state overlay.</p>
+        </a>
+
+        <!-- Card 3 -->
+        <a href="knowledge.html#relationship" class="hub-card">
+          <div class="hub-card-meta">
+            <span class="hub-tag">RELATIONSHIP EVIDENCE</span>
+            <span class="hub-read-time">5 min read</span>
+          </div>
+          <h3 class="hub-title">Relationship Evidence Model</h3>
+          <p class="hub-snippet">Multi-factor score calculation combining mutual connection density and firm overlap.</p>
+        </a>
+
+        <!-- Card 4 -->
+        <a href="knowledge.html#banking" class="hub-card">
+          <div class="hub-card-meta">
+            <span class="hub-tag">INVESTMENT BANKING</span>
+            <span class="hub-read-time">5 min read</span>
+          </div>
+          <h3 class="hub-title">Investment Banking Workflow</h3>
+          <p class="hub-snippet">Buy-side deal sourcing and sell-side advisory warm introduction methodology.</p>
+        </a>
+      </div>
+
+      <div class="hub-footer-cta">
+        <a href="knowledge.html" class="btn-secondary">
+          <span>View all articles →</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA Section -->
+  <section class="container cta-banner">
+    <div class="cta-glass-box">
+      <h2>Ready to build your <span class="text-gradient">relationship graph</span>?</h2>
+      <p class="subtext">Install WarmGraph today and turn static LinkedIn connections into actionable deal intelligence.</p>
+      <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-top: 24px;">
+        <a href="../extension/popup.html" class="btn-primary">
+          <span>Install Extension</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </a>
+        <a href="knowledge.html" class="btn-secondary">
+          <span>Explore Knowledge Hub</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a href="index.html" class="logo-link">
+            <div class="logo-badge">
+              <svg viewBox="0 0 24 24">
+                <circle cx="6" cy="6" r="3" />
+                <circle cx="18" cy="6" r="3" />
+                <circle cx="12" cy="18" r="3" />
+                <path d="M8.5 7.5L15.5 7.5 M7.5 8.5L10.5 15.5 M16.5 8.5L13.5 15.5" stroke="currentColor" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <span class="logo-text">Warm<span>Graph</span></span>
+          </a>
+          <p>The relationship graph platform for investment banking, venture capital, and corporate development.</p>
+        </div>
+
+        <div>
+          <h4 class="footer-col-title">Product</h4>
+          <ul class="footer-links">
+            <li><a href="index.html">Home</a></li>
+            <li><a href="#how-it-works">How It Works</a></li>
+            <li><a href="#showcase">Product Showcase</a></li>
+            <li><a href="roadmap.html">Roadmap</a></li>
+          </ul>
+        </div>
+
+        <div>
+          <h4 class="footer-col-title">Knowledge Hub</h4>
+          <ul class="footer-links">
+            <li><a href="knowledge.html#architecture">Architecture</a></li>
+            <li><a href="knowledge.html#acquisition">Acquisition Pipeline</a></li>
+            <li><a href="knowledge.html#graph_engine">Graph Engine</a></li>
+            <li><a href="knowledge.html#banking">Investment Banking</a></li>
+          </ul>
+        </div>
+
+        <div>
+          <h4 class="footer-col-title">Legal & Security</h4>
+          <ul class="footer-links">
+            <li><a href="#">Privacy Policy</a></li>
+            <li><a href="#">Terms of Service</a></li>
+            <li><a href="#">Client-Side Security</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <span>&copy; 2026 WarmGraph Inc. All rights reserved.</span>
+        <span>Independent SaaS Platform.</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/app.js"></script>
+  <script src="js/animations.js"></script>
+</body>
+</html>

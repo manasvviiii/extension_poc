@@ -76,12 +76,7 @@ function escapeHtml(str) {
       "detected";
 
     identityEl.textContent =
-      `Owner: ${identity.ownerId}\n` +
-      `LinkedIn profile: ${
-        identity.externalProfileUrl ||
-        "Detected ✓"
-      }\n` +
-      "Identity status: Ready";
+      `Identity Ready ✓ ${identity.externalProfileUrl ? "(" + identity.externalProfileUrl + ")" : ""}`;
 
   } else {
 
@@ -89,8 +84,7 @@ function escapeHtml(str) {
       "pending";
 
     identityEl.textContent =
-      "Identity is pending — reload the extension " +
-      "to create a local owner ID.";
+      "Identity Pending — Open any LinkedIn page to connect owner ID.";
 
   }
 
@@ -308,6 +302,190 @@ function sendTabMessage(action, payload = {}) {
   });
 }
 
+function getHumanizedStateInfo(status) {
+  if (!status) {
+    return {
+      title: "Network Ready",
+      badgeText: "● Ready",
+      subtext: "Open your LinkedIn Connections page to build your network map.",
+      isComplete: false,
+      isSyncing: false,
+      isSyncFailed: false
+    };
+  }
+
+  const state = status.state || "idle";
+  const collected = status.collected_count !== undefined ? status.collected_count : (status.connections ? status.connections.length : 0);
+  const expected = status.expected_total || status.reliable_dom_total || 0;
+  const syncStatus = status.sync_status || "idle";
+  const isError = state === "failed" || state === "error" || (status.error && status.error.length > 0);
+
+  if (isError) {
+    return {
+      title: "Something went wrong",
+      badgeText: "⚠️ Attention Required",
+      subtext: status.error || status.status_message || "An unexpected issue occurred. Try reopening your LinkedIn Connections page.",
+      isComplete: false,
+      isSyncing: false,
+      isSyncFailed: false
+    };
+  }
+
+  switch (state) {
+    case "preparing":
+      return {
+        title: "Preparing your network",
+        badgeText: "● Preparing",
+        subtext: "WarmGraph is getting things ready.",
+        isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+
+    case "acquiring":
+    case "collecting":
+      return {
+        title: "Building your network",
+        badgeText: "● Building network",
+        subtext: `${collected > 0 ? collected + " connections discovered." : "Discovering connections."}\n\nYou can keep browsing — WarmGraph is working quietly in the background.`,
+        isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+
+    case "waiting":
+    case "waiting_for_content":
+      return {
+        title: "Loading more connections...",
+        badgeText: "● Waiting for content",
+        subtext: "WarmGraph is waiting for the page to finish loading.",
+        isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+
+    case "settling":
+      return {
+        title: "Checking your network...",
+        badgeText: "● Verifying page",
+        subtext: "Making sure there are no more connections to add.",
+        isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+
+    case "paused":
+    case "interrupted":
+      return {
+        title: "We'll continue when you're back",
+        badgeText: "⏸ Saved",
+        subtext: "Your progress is saved. Return to your Connections page when you're ready.",
+        isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+
+    case "resumed":
+      return {
+        title: "Building your network",
+        badgeText: "● Resuming",
+        subtext: `Continuing from ${collected} connections. You can keep browsing freely.`,
+        isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+
+    case "completed":
+      if (syncStatus === "syncing") {
+        return {
+          title: "Saving your network...",
+          badgeText: "● Saving network",
+          subtext: `${collected} connections collected. Saving your network to WarmGraph...`,
+          isComplete: false,
+          isSyncing: true,
+          isSyncFailed: false
+        };
+      } else if (syncStatus === "synced") {
+        return {
+          title: "Your network is ready ✨",
+          badgeText: "✓ Up to date",
+          subtext: `${collected} connections are now available in WarmGraph. Ready to research people and companies.`,
+          isComplete: true,
+          isSyncing: false,
+          isSyncFailed: false
+        };
+      } else if (syncStatus === "failed" || syncStatus === "sync_failed") {
+        return {
+          title: `${collected} connections collected`,
+          badgeText: "⚠️ Sync pending",
+          subtext: "We couldn't finish saving your network yet. We'll try again automatically.",
+          isComplete: false,
+          isSyncing: false,
+          isSyncFailed: true
+        };
+      } else if (syncStatus === "blocked") {
+        return {
+          title: `${collected} connections collected`,
+          badgeText: "⚠️ Sync pending",
+          subtext: "Complete dataset required before saving network data.",
+          isComplete: false,
+          isSyncing: false,
+          isSyncFailed: true
+        };
+      } else {
+        return {
+          title: "Saving your network...",
+          badgeText: "● Saving network",
+          subtext: `Preparing to save ${collected} connections to WarmGraph...`,
+          isComplete: false,
+          isSyncing: true,
+          isSyncFailed: false
+        };
+      }
+
+    case "idle":
+    default:
+      if (collected > 0) {
+        if (syncStatus === "synced") {
+          return {
+            title: "Your network is ready ✨",
+            badgeText: "✓ Network ready",
+            subtext: `${collected} connections catalogued in WarmGraph.`,
+            isComplete: true,
+            isSyncing: false,
+            isSyncFailed: false
+          };
+        } else if (syncStatus === "failed" || syncStatus === "sync_failed") {
+          return {
+            title: `${collected} connections collected`,
+            badgeText: "⚠️ Sync pending",
+            subtext: "Network collected locally. We'll try saving to WarmGraph automatically.",
+            isComplete: false,
+            isSyncing: false,
+            isSyncFailed: true
+          };
+        } else {
+          return {
+            title: `${collected} connections collected`,
+            badgeText: "● Network collected",
+            subtext: `${collected} connections saved in local session.`,
+            isComplete: false,
+            isSyncing: false,
+            isSyncFailed: false
+          };
+        }
+      }
+      return {
+        title: "Network Ready",
+        badgeText: "● Ready",
+        subtext: "Open your LinkedIn Connections page to build your network map.",
+        isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+  }
+}
+
 function updateAcquisitionDashboard(status) {
   if (!status) return;
 
@@ -316,6 +494,11 @@ function updateAcquisitionDashboard(status) {
   const expected = status.expected_total || status.reliable_dom_total || 0;
   const missing = Math.max(0, expected - collected);
 
+  const heroDisplayEl = document.getElementById("heroCountDisplay");
+  const heroLabelEl = document.getElementById("heroCountLabel");
+  const heroSecondaryEl = document.getElementById("heroSecondaryText");
+  const statusBadgeEl = document.getElementById("acquisitionStatusBadge");
+
   const titleEl = document.getElementById("acquisitionStatusTitle");
   const countDisplayEl = document.getElementById("acquisitionCountDisplay");
   const instructionEl = document.getElementById("acquisitionInstruction");
@@ -323,6 +506,46 @@ function updateAcquisitionDashboard(status) {
   const progressBarEl = document.getElementById("acquisitionProgressBar");
   const remainingEl = document.getElementById("acquisitionRemainingText");
   const syncNetworkBtn = document.getElementById("syncNetworkBtn");
+  const ctaSectionEl = document.getElementById("networkReadyCtaSection");
+  const ctaBtnEl = document.getElementById("openWarmGraphWorkspaceBtn");
+
+  const humanized = getHumanizedStateInfo(status);
+
+  if (heroDisplayEl) {
+    heroDisplayEl.textContent = collected;
+  }
+
+  if (heroLabelEl) {
+    heroLabelEl.textContent = collected === 1 ? "connection" : "connections";
+  }
+
+  if (heroSecondaryEl) {
+    if (expected > 0) {
+      heroSecondaryEl.textContent = `${collected} of ${expected} connections`;
+    } else {
+      heroSecondaryEl.textContent = `${collected} connections discovered`;
+    }
+  }
+
+  if (statusBadgeEl) {
+    statusBadgeEl.textContent = humanized.badgeText;
+  }
+
+  if (titleEl) {
+    titleEl.textContent = humanized.title;
+  }
+
+  if (countDisplayEl) {
+    if (expected > 0) {
+      countDisplayEl.textContent = `${collected} of ${expected} connections`;
+    } else {
+      countDisplayEl.textContent = `${collected} connections found`;
+    }
+  }
+
+  if (instructionEl) {
+    instructionEl.textContent = humanized.subtext;
+  }
 
   const completionStatus = status.completion_status || (state === "completed" ? (collected >= expected ? "complete" : "complete_rendered_dataset") : "incomplete");
   const syncState = status.sync_status || "idle";
@@ -335,12 +558,31 @@ function updateAcquisitionDashboard(status) {
 
   if (remainingEl) {
     if (expected > 0) {
-      remainingEl.textContent = missing > 0 ? `${missing} connection${missing > 1 ? 's' : ''} remaining (${pct}%)` : `All ${collected} connections collected (100%)`;
+      remainingEl.textContent = missing > 0 ? `${missing} connection${missing > 1 ? 's' : ''} remaining (${pct}%)` : `All ${collected} connections catalogued (100%)`;
     } else {
-      remainingEl.textContent = `${collected} connections collected`;
+      remainingEl.textContent = `${collected} connections catalogued`;
     }
   }
 
+  if (ctaSectionEl) {
+    if (humanized.isComplete) {
+      ctaSectionEl.style.display = "block";
+    } else {
+      ctaSectionEl.style.display = "none";
+    }
+  }
+
+  if (ctaBtnEl && !ctaBtnEl._hasInitListener) {
+    ctaBtnEl._hasInitListener = true;
+    ctaBtnEl.addEventListener("click", () => {
+      const researchContainer = document.getElementById("researchContainer");
+      if (researchContainer) {
+        researchContainer.scrollIntoView({ behavior: "smooth" });
+      }
+    });
+  }
+
+  // Sync Network Button logic
   const isReadyToSync = (completionStatus === "complete" || completionStatus === "complete_rendered_dataset" || (state === "completed" && collected >= expected - 1));
 
   if (syncNetworkBtn) {
@@ -367,9 +609,27 @@ function updateAcquisitionDashboard(status) {
           if (res && res.success) {
             syncNetworkBtn.textContent = "Synced ✓";
             syncNetworkBtn.disabled = true;
-            if (syncBadgeEl) {
-              syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">✓ ${collected} connections synced</span>`;
+            if (latestData) {
+              latestData.sync_status = "synced";
+              latestData.syncStatus = "synced";
             }
+            chrome.storage.local.get(["acquisition_session"], (localRes) => {
+              if (localRes && localRes.acquisition_session) {
+                const sess = localRes.acquisition_session;
+                sess.syncStatus = "synced";
+                sess.sync_status = "synced";
+                sess.syncMessage = "Backend sync completed successfully.";
+                chrome.storage.local.set({ acquisition_session: sess });
+              }
+            });
+            const updatedStatus = (res && res.status) ? { ...res.status, sync_status: "synced", syncStatus: "synced" } : {
+              ...(latestData || {}),
+              state: "completed",
+              completion_status: "complete",
+              sync_status: "synced",
+              syncStatus: "synced"
+            };
+            updateAcquisitionDashboard(updatedStatus);
           } else {
             syncNetworkBtn.disabled = false;
             syncNetworkBtn.textContent = "Retry Sync";
@@ -384,85 +644,12 @@ function updateAcquisitionDashboard(status) {
     }
   }
 
-  if (state === "acquiring") {
-    if (titleEl) {
-      titleEl.innerHTML = `<span style="color:#0A66C2;">● Collecting connections...</span>`;
-    }
-    if (countDisplayEl) {
-      countDisplayEl.textContent = `${collected} / ${expected}`;
-    }
-    if (instructionEl) {
-      instructionEl.textContent = status.status_message || "Acquiring connection records from page...";
-    }
-    if (syncBadgeEl) {
-      syncBadgeEl.innerHTML = `<span style="color:#0A66C2;">Backend Sync: Pending</span>`;
-    }
-  } else if (completionStatus === "complete_rendered_dataset" || (state === "completed" && collected === expected - 1)) {
-    if (titleEl) {
-      titleEl.innerHTML = `<span style="color:#2e7d32;">✓ All available connections extracted</span>`;
-    }
-    if (countDisplayEl) {
-      countDisplayEl.textContent = `${collected} connections`;
-    }
-    if (instructionEl) {
-      instructionEl.innerHTML = `LinkedIn reports ${expected} connections; ${collected} were available in the rendered list.`;
-    }
-    if (syncBadgeEl) {
-      if (syncState === "synced") {
-        syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">✓ ${collected} connections synced</span>`;
-      } else if (syncState === "syncing") {
-        syncBadgeEl.innerHTML = `<span style="color:#0A66C2;">Backend Sync: Syncing...</span>`;
-      } else {
-        syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">Backend Sync: Ready</span>`;
-      }
-    }
-  } else if (completionStatus === "complete" || (state === "completed" && collected >= expected)) {
-    if (titleEl) {
-      titleEl.innerHTML = `<span style="color:#2e7d32;">✓ Connections</span>`;
-    }
-    if (countDisplayEl) {
-      countDisplayEl.textContent = `${collected} connections`;
-    }
-    if (instructionEl) {
-      instructionEl.innerHTML = `<span style="color:#2e7d32; font-weight:600;">✓ All connections collected</span>`;
-    }
-    if (syncBadgeEl) {
-      if (syncState === "synced") {
-        syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">✓ ${collected} connections synced</span>`;
-      } else if (syncState === "syncing") {
-        syncBadgeEl.innerHTML = `<span style="color:#0A66C2;">Backend Sync: Syncing...</span>`;
-      } else {
-        syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">Backend Sync: Ready</span>`;
-      }
-    }
-  } else if (state === "incomplete" || state === "unsupported") {
-    if (titleEl) {
-      titleEl.innerHTML = `<span style="color:#c62828;">⚠️ Connections</span>`;
-    }
-    if (countDisplayEl) {
-      countDisplayEl.textContent = `${collected} / ${expected} connections`;
-    }
-    if (instructionEl) {
-      const detailStr = missing > 0
-        ? `${missing} connection${missing > 1 ? 's are' : ' is'} unavailable from the rendered page.`
-        : "";
-      instructionEl.innerHTML = `<strong>✓ ${collected} connections extracted</strong><br><span style="color:#c62828;">${detailStr}</span>`;
-    }
-    if (syncBadgeEl) {
-      syncBadgeEl.innerHTML = `<span style="color:#c62828;">Sync unavailable until the dataset is complete</span>`;
-    }
-  } else {
-    if (titleEl) {
-      titleEl.innerHTML = `<span style="color:#666;">Connections Idle</span>`;
-    }
-    if (countDisplayEl) {
-      countDisplayEl.textContent = `${collected} / ${expected} connections`;
-    }
-    if (instructionEl) {
-      instructionEl.textContent = "Open LinkedIn connections page to acquire dataset.";
-    }
-    if (syncBadgeEl) {
-      syncBadgeEl.innerHTML = `<span style="color:#666;">Backend Sync: Pending</span>`;
+  if (syncBadgeEl) {
+    if (syncState === "synced") {
+      syncBadgeEl.style.display = "inline";
+      syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">✓ ${collected} connections synced</span>`;
+    } else {
+      syncBadgeEl.style.display = "none";
     }
   }
 
@@ -477,7 +664,20 @@ function updateAcquisitionDashboard(status) {
     });
   }
 
-  // Debug mode toggle listener initialization
+  // Developer Extraction Dashboard button listener initialization
+  const devDashBtn = document.getElementById("openDevDashboardBtn");
+  if (devDashBtn && !devDashBtn._hasInitListener) {
+    devDashBtn._hasInitListener = true;
+    devDashBtn.addEventListener("click", () => {
+      if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.create) {
+        chrome.tabs.create({ url: chrome.runtime.getURL("developer_dashboard.html") });
+      } else if (typeof window !== "undefined") {
+        window.open("developer_dashboard.html", "_blank");
+      }
+    });
+  }
+
+  // Developer Diagnostics drawer toggle listener initialization
   const toggleBtn = document.getElementById("toggleDebugTelemetryBtn");
   const diagEl = document.getElementById("telemetryDiagnostics");
   if (toggleBtn && !toggleBtn._hasInitListener) {
@@ -485,68 +685,73 @@ function updateAcquisitionDashboard(status) {
     toggleBtn.addEventListener("click", () => {
       if (diagEl.style.display === "none" || !diagEl.style.display) {
         diagEl.style.display = "block";
-        toggleBtn.textContent = "[Hide Debug Mode]";
+        toggleBtn.textContent = "[ Developer Diagnostics ▴ ]";
       } else {
         diagEl.style.display = "none";
-        toggleBtn.textContent = "[Debug Mode]";
+        toggleBtn.textContent = "[ Developer Diagnostics ▾ ]";
       }
     });
   }
 
   if (diagEl) {
-    let text = "";
-    if (status.telemetry) {
-      const t = status.telemetry;
-      text += `[EXTRACTION TELEMETRY]\n` +
-        `Profile Links Found: ${t.dom_card_count || 0}\n` +
-        `Containers Inspected: ${t.containers_inspected || 0}\n` +
-        `Successfully Extracted: ${t.extracted_records || 0} | Failed: ${t.failed_extraction || 0}\n` +
-        `Previously Known: ${t.previously_known || 0} | New Unique: +${t.new_unique || 0}\n` +
-        `Total Collected: ${t.collected_total || 0}\n\n` +
-        `[LAST ACTION]\n` +
-        `Attempt: #${t.attempt_number || 1} | Method: ${t.trigger_method || "none"}\n` +
-        `Target Container: ${t.scroll_container_description || "none"}\n` +
-        `scrollTop: ${t.scroll_top_before || 0} → ${t.scroll_top_after || 0}\n` +
-        (t.settling_phase_active ? `Settling Phase: ${t.settling_phase_active} | Progress: ${t.settling_progress_detected || "None"}\n` : "") +
-        `\n`;
+    getStoredOwnerId().then(idInfo => {
+      let debugHead = `=== DEVELOPER DIAGNOSTICS ===\n` +
+        `Owner ID: ${idInfo.ownerId || "Pending"}\n` +
+        `LinkedIn Profile: ${idInfo.externalProfileUrl || "Not detected"}\n` +
+        `Session ID: ${status.sessionId || "None"}\n` +
+        `State: ${status.state || "idle"} | Completion Status: ${status.completion_status || "incomplete"}\n\n`;
 
-      if (t.bottom_telemetry) {
-        const b = t.bottom_telemetry;
-        let rectStr = b.loaderBoundingClientRect ? `[top:${b.loaderBoundingClientRect.top}, bot:${b.loaderBoundingClientRect.bottom}, w:${b.loaderBoundingClientRect.width}, h:${b.loaderBoundingClientRect.height}]` : "N/A";
-        text += `[BOTTOM CONTAINER DIAGNOSTIC]\n` +
-          `scrollEventObserved: ${b.scrollEventObserved || "NO"} | target: ${b.scrollEventTarget || "None"}\n` +
-          `scrollTop: ${b.scrollTop} | maxScrollTop: ${b.maxScrollTop} | distanceFromBottom: ${b.distanceFromBottom}px\n` +
-          `scrollHeight: ${b.scrollHeightBefore || 0} → ${b.scrollHeightAfter || 0}\n` +
-          `cardCount: ${b.cardCountBefore || 0} → ${b.cardCountAfter || 0} | profileLinks: ${b.profileLinkCountBefore || 0} → ${b.profileLinkCountAfter || 0}\n` +
-          `mutationsObserved: ${b.mutationsObserved || "NO"} | newDomNodes: ${b.newDomNodes || "None"}\n` +
-          `tempLoadingDetected: ${b.tempLoadingDetected || "None"}\n` +
-          `loaderFound: ${b.loaderFound ? "YES" : "No"} | visibleInContainer: ${b.loaderVisibleInContainer ? "YES" : "No"}\n` +
-          `loaderRect: ${rectStr}\n\n`;
+      if (status.telemetry) {
+        const t = status.telemetry;
+        debugHead += `[EXTRACTION TELEMETRY]\n` +
+          `Profile Links Found: ${t.dom_card_count || 0}\n` +
+          `Containers Inspected: ${t.containers_inspected || 0}\n` +
+          `Successfully Extracted: ${t.extracted_records || 0} | Failed: ${t.failed_extraction || 0}\n` +
+          `Previously Known: ${t.previously_known || 0} | New Unique: +${t.new_unique || 0}\n` +
+          `Total Collected: ${t.collected_total || 0}\n\n` +
+          `[LAST ACTION]\n` +
+          `Attempt: #${t.attempt_number || 1} | Method: ${t.trigger_method || "none"}\n` +
+          `Target Container: ${t.scroll_container_description || "none"}\n` +
+          `scrollTop: ${t.scroll_top_before || 0} → ${t.scroll_top_after || 0}\n` +
+          (t.settling_phase_active ? `Settling Phase: ${t.settling_phase_active} | Progress: ${t.settling_progress_detected || "None"}\n` : "") +
+          `\n`;
 
-        if (Array.isArray(b.elementsNearBottom) && b.elementsNearBottom.length > 0) {
-          text += `[ELEMENTS NEAR BOTTOM (${b.elementsNearBottom.length})]\n`;
-          b.elementsNearBottom.forEach((elStr, idx) => {
-            text += `  ${idx + 1}. ${elStr}\n`;
-          });
-          text += `\n`;
+        if (t.bottom_telemetry) {
+          const b = t.bottom_telemetry;
+          let rectStr = b.loaderBoundingClientRect ? `[top:${b.loaderBoundingClientRect.top}, bot:${b.loaderBoundingClientRect.bottom}, w:${b.loaderBoundingClientRect.width}, h:${b.loaderBoundingClientRect.height}]` : "N/A";
+          debugHead += `[BOTTOM CONTAINER DIAGNOSTIC]\n` +
+            `scrollEventObserved: ${b.scrollEventObserved || "NO"} | target: ${b.scrollEventTarget || "None"}\n` +
+            `scrollTop: ${b.scrollTop} | maxScrollTop: ${b.maxScrollTop} | distanceFromBottom: ${b.distanceFromBottom}px\n` +
+            `scrollHeight: ${b.scrollHeightBefore || 0} → ${b.scrollHeightAfter || 0}\n` +
+            `cardCount: ${b.cardCountBefore || 0} → ${b.cardCountAfter || 0} | profileLinks: ${b.profileLinkCountBefore || 0} → ${b.profileLinkCountAfter || 0}\n` +
+            `mutationsObserved: ${b.mutationsObserved || "NO"} | newDomNodes: ${b.newDomNodes || "None"}\n` +
+            `tempLoadingDetected: ${b.tempLoadingDetected || "None"}\n` +
+            `loaderFound: ${b.loaderFound ? "YES" : "No"} | visibleInContainer: ${b.loaderVisibleInContainer ? "YES" : "No"}\n` +
+            `loaderRect: ${rectStr}\n\n`;
+
+          if (Array.isArray(b.elementsNearBottom) && b.elementsNearBottom.length > 0) {
+            debugHead += `[ELEMENTS NEAR BOTTOM (${b.elementsNearBottom.length})]\n`;
+            b.elementsNearBottom.forEach((elStr, idx) => {
+              debugHead += `  ${idx + 1}. ${elStr}\n`;
+            });
+            debugHead += `\n`;
+          }
         }
       }
-    }
 
-    if (Array.isArray(status.container_diagnostics) && status.container_diagnostics.length > 0) {
-      text += `=== LIVE CONTAINER CANDIDATES (${status.container_diagnostics.length}) ===\n`;
-      status.container_diagnostics.forEach((c, idx) => {
-        text += `[${idx + 1}] ${c.label}\n` +
-          `    desc: ${c.description}\n` +
-          `    scrollHeight: ${c.scrollHeight} | clientHeight: ${c.clientHeight} | scrollTop: ${c.scrollTop}\n` +
-          `    overflowY: ${c.overflowY} | isScrollable: ${c.isScrollable ? "YES ★" : "No"}\n` +
-          `    hasLoader: ${c.hasLoader ? "Yes" : "No"} | cardCount: ${c.cardCount}\n`;
-      });
-    }
+      if (Array.isArray(status.container_diagnostics) && status.container_diagnostics.length > 0) {
+        debugHead += `=== LIVE CONTAINER CANDIDATES (${status.container_diagnostics.length}) ===\n`;
+        status.container_diagnostics.forEach((c, idx) => {
+          debugHead += `[${idx + 1}] ${c.label}\n` +
+            `    desc: ${c.description}\n` +
+            `    scrollHeight: ${c.scrollHeight} | clientHeight: ${c.clientHeight} | scrollTop: ${c.scrollTop}\n` +
+            `    overflowY: ${c.overflowY} | isScrollable: ${c.isScrollable ? "YES ★" : "No"}\n` +
+            `    hasLoader: ${c.hasLoader ? "Yes" : "No"} | cardCount: ${c.cardCount}\n`;
+        });
+      }
 
-    if (text) {
-      diagEl.textContent = text;
-    }
+      diagEl.textContent = debugHead;
+    });
   }
 
   if (status.connections) {
@@ -555,16 +760,58 @@ function updateAcquisitionDashboard(status) {
   }
 }
 
+function fetchAcquisitionStatus() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["acquisition_session"], (localRes) => {
+      const localSession = localRes ? localRes.acquisition_session : null;
+
+      const finishWithStatus = (res) => {
+        if (res && res.status && localSession) {
+          if (localSession.syncStatus === "synced" || localSession.sync_status === "synced") {
+            res.status.syncStatus = "synced";
+            res.status.sync_status = "synced";
+          }
+        }
+        resolve(res);
+      };
+
+      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({ action: "GET_SESSION_STATUS" }, (bgRes) => {
+          if (!chrome.runtime.lastError && bgRes && bgRes.status && bgRes.status.state !== "idle") {
+            return finishWithStatus(bgRes);
+          }
+          sendTabMessage("getAcquisitionStatus").then(tabRes => {
+            finishWithStatus(tabRes);
+          }).catch(() => {
+            if (bgRes && bgRes.status) {
+              finishWithStatus(bgRes);
+            } else if (localSession) {
+              finishWithStatus({ success: true, status: localSession });
+            } else {
+              resolve(null);
+            }
+          });
+        });
+      } else {
+        sendTabMessage("getAcquisitionStatus").then(tabRes => finishWithStatus(tabRes)).catch(() => {
+          if (localSession) finishWithStatus({ success: true, status: localSession });
+          else resolve(null);
+        });
+      }
+    });
+  });
+}
+
 function startStatusPolling() {
   stopStatusPolling();
   statusPollInterval = setInterval(async () => {
     try {
-      const res = await sendTabMessage("getAcquisitionStatus");
+      const res = await fetchAcquisitionStatus();
       if (res && res.status) {
         updateAcquisitionDashboard(res.status);
       }
     } catch (e) {
-      stopStatusPolling();
+      // Ignore polling errors while tab/popup changes
     }
   }, 400);
 }
@@ -579,14 +826,14 @@ function stopStatusPolling() {
 // Initial status load & auto-poll
 (async () => {
   try {
-    const res = await sendTabMessage("getAcquisitionStatus");
+    const res = await fetchAcquisitionStatus();
     if (res && res.status) {
       updateAcquisitionDashboard(res.status);
-      startStatusPolling();
     }
   } catch (e) {
-    // Page may not be active yet
+    // Ignore initial error
   }
+  startStatusPolling();
 })();
 
 

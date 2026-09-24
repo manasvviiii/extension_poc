@@ -107,6 +107,10 @@ function getCardLines(card) {
 
 
 function getSemanticText(root, patterns) {
+  if (!root || typeof root.querySelector !== "function") {
+    return null;
+  }
+
   for (const selector of patterns) {
     const element =
       root.querySelector(selector);
@@ -750,6 +754,9 @@ function extractFirstDegreeCard(
   if (!isConnectionsPage && !hasConnectedIndicator) {
     return null;
   }
+  if (/\b(2nd|3rd\+?)\b/i.test(text) && !hasConnectedIndicator) {
+    return null;
+  }
 
   const lines = getCardLines(card);
 
@@ -1229,9 +1236,25 @@ function inspectBottomTelemetry(container, loader, preCardCount, postCardCount, 
 }
 
 
-// =========================================================
-// AUTOMATED CONNECTION ACQUISITION SESSION
-// =========================================================
+function mergeRecord(existing = {}, fresh = {}) {
+  const merged = { ...existing, ...fresh };
+  for (const k in existing) {
+    if (existing[k] && !fresh[k]) {
+      merged[k] = existing[k];
+    }
+  }
+  return merged;
+}
+
+const ACQUISITION_MIN_DELAY_MS = 20000;
+const ACQUISITION_MAX_DELAY_MS = 25000;
+
+function getRandomAcquisitionDelayMs() {
+  if (typeof window !== "undefined" && window.TEST_ACQUISITION_DELAY_MS !== undefined) {
+    return window.TEST_ACQUISITION_DELAY_MS;
+  }
+  return Math.floor(Math.random() * (ACQUISITION_MAX_DELAY_MS - ACQUISITION_MIN_DELAY_MS + 1)) + ACQUISITION_MIN_DELAY_MS;
+}
 
 class ConnectionAcquisitionSession {
   constructor() {
@@ -1264,6 +1287,126 @@ class ConnectionAcquisitionSession {
     this.lastBatchNewEvidence = 0;
     this.activeLoopPromise = null;
     this.shouldCancel = false;
+    this.isTabHidden = false;
+  }
+
+  checkpointSessionSync() {
+    const status = this.getStatus();
+    const sessionObj = {
+      sessionId: this.sessionId,
+      state: this.state,
+      expectedTotal: status.expected_total,
+      collectedConnections: status.connections,
+      connections: status.connections,
+      collectedCount: status.collected_count,
+      first_degree_count: status.first_degree_count,
+      relationshipEvidence: status.relationship_evidence,
+      relationship_evidence: status.relationship_evidence,
+      relationshipEvidenceCount: status.relationship_evidence_count,
+      pageCount: status.page_count,
+      completionStatus: status.completion_status,
+      isPartial: status.is_partial,
+      statusMessage: status.status_message,
+      syncStatus: status.sync_status,
+      syncMessage: status.sync_message,
+      telemetry: status.telemetry,
+      lastUpdated: new Date().toISOString()
+    };
+
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      try {
+        chrome.storage.local.set({ acquisition_session: sessionObj });
+      } catch (e) {}
+    }
+
+    if (typeof window !== "undefined" && typeof window.updateWarmGraphOverlay === "function") {
+      window.updateWarmGraphOverlay(status);
+    }
+  }
+
+  checkpointSession() {
+    this.checkpointSessionSync();
+    const status = this.getStatus();
+    if (typeof window !== "undefined" && typeof window.updateWarmGraphOverlay === "function") {
+      window.updateWarmGraphOverlay(status);
+    }
+    const payload = {
+      action: "UPDATE_SESSION",
+      sessionId: this.sessionId,
+      connections: status.connections,
+      relationship_evidence: status.relationship_evidence,
+      expectedTotal: status.expected_total,
+      pageCount: status.page_count,
+      state: status.state,
+      completionStatus: status.completion_status,
+      isPartial: status.is_partial,
+      statusMessage: status.status_message,
+      syncStatus: status.sync_status,
+      syncMessage: status.sync_message,
+      telemetry: status.telemetry
+    };
+
+    if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
+      try {
+        chrome.runtime.sendMessage(payload, () => {});
+      } catch (e) {}
+    }
+  }
+
+  async initOrHydrateSession() {
+    return new Promise((resolve) => {
+      const applySession = (session) => {
+        if (session && ["acquiring", "paused", "interrupted", "completed"].includes(session.state)) {
+          if (session.sessionId) this.sessionId = session.sessionId;
+          if (session.expectedTotal) this.expectedTotal = session.expectedTotal;
+          if (session.pageCount) this.pageCount = session.pageCount;
+          if (session.completionStatus) this.completionStatus = session.completionStatus;
+          if (session.isPartial !== undefined) this.isPartial = session.isPartial;
+          if (session.statusMessage) this.statusMessage = session.statusMessage;
+          if (session.syncStatus) this.syncStatus = session.syncStatus;
+          if (session.syncMessage) this.syncMessage = session.syncMessage;
+
+          const storedConnections = session.collectedConnections || session.connections || [];
+          storedConnections.forEach(c => {
+            const key = this.getDeduplicationKey(c);
+            if (key) {
+              const existing = this.connections.get(key);
+              this.connections.set(key, mergeRecord(existing || {}, c));
+              connectionStore.set(key, mergeRecord(connectionStore.get(key) || {}, c));
+            }
+          });
+
+          const storedEvidence = session.relationshipEvidence || session.relationship_evidence || [];
+          storedEvidence.forEach(e => {
+            const key = `${this.getDeduplicationKey(e)}|${e.observed_degree || "2nd"}`;
+            if (key) {
+              const existing = this.relationshipEvidence.get(key);
+              this.relationshipEvidence.set(key, mergeRecord(existing || {}, e));
+              relationshipEvidenceStore.set(key, mergeRecord(relationshipEvidenceStore.get(key) || {}, e));
+            }
+          });
+
+          if (session.state === "acquiring" || session.state === "interrupted") {
+            this.state = "acquiring";
+          } else {
+            this.state = session.state;
+          }
+        }
+        resolve(this.getStatus());
+      };
+
+      try {
+        if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.get(["acquisition_session"], (res) => {
+            applySession(res ? res.acquisition_session : null);
+          });
+        } else {
+          applySession(null);
+        }
+      } catch (e) {
+        applySession(null);
+      }
+    });
   }
 
   getDeduplicationKey(record) {
@@ -1610,16 +1753,26 @@ class ConnectionAcquisitionSession {
     return this.autoSyncToBackend();
   }
 
-  async autoSyncToBackend() {
+  async autoSyncToBackend(isRetry = false) {
     // STRICT GUARD: Sync ONLY when state is completed and dataset is NOT partial
     if (this.state !== "completed" || this.isPartial) {
       this.syncStatus = "blocked";
       this.syncMessage = "Backend sync blocked: Partial or incomplete datasets are never synced automatically.";
-      return;
+      await this.checkpointSession();
+      return false;
+    }
+
+    if (this.syncStatus === "synced") {
+      return false;
+    }
+
+    if (this.syncStatus === "syncing" && !isRetry) {
+      return false;
     }
 
     this.syncStatus = "syncing";
-    this.syncMessage = "Automatically syncing verified complete dataset to backend...";
+    this.syncMessage = "Saving your network to WarmGraph...";
+    await this.checkpointSession();
 
     try {
       const ownerId = await getOwnerId();
@@ -1646,17 +1799,45 @@ class ConnectionAcquisitionSession {
         });
 
         if (res.ok) {
+          const resData = await res.json().catch(() => ({}));
           this.syncStatus = "synced";
           this.syncMessage = "Backend sync completed successfully.";
+          this.lastSyncTimestamp = new Date().toISOString();
+          this.lastSyncError = null;
+          this.syncRetryCount = 0;
+          await this.checkpointSession();
         } else {
           const errData = await res.json().catch(() => ({}));
           this.syncStatus = "failed";
-          this.syncMessage = errData.detail || "Backend import failed.";
+          this.syncMessage = errData.detail || `Backend returned HTTP ${res.status}`;
+          this.lastSyncError = errData.detail || `HTTP ${res.status}`;
+          await this.checkpointSession();
+          this.scheduleSyncRetry();
         }
       }
     } catch (err) {
       this.syncStatus = "failed";
-      this.syncMessage = err.message;
+      this.syncMessage = err.message || "Network error while connecting to backend.";
+      this.lastSyncError = err.message;
+      await this.checkpointSession();
+      this.scheduleSyncRetry();
+    }
+  }
+
+  scheduleSyncRetry() {
+    if (this.syncRetryTimer) return;
+    if (!this.syncRetryCount) this.syncRetryCount = 0;
+    const MAX_SYNC_RETRIES = 3;
+
+    if (this.syncRetryCount < MAX_SYNC_RETRIES) {
+      this.syncRetryCount++;
+      const backoffMs = Math.min(10000, 3000 * Math.pow(2, this.syncRetryCount - 1));
+      this.syncRetryTimer = setTimeout(() => {
+        this.syncRetryTimer = null;
+        if (this.state === "completed" && this.syncStatus === "failed") {
+          this.autoSyncToBackend(true);
+        }
+      }, backoffMs);
     }
   }
 
@@ -1674,7 +1855,8 @@ class ConnectionAcquisitionSession {
       const previousCollected = this.connections.size;
       const initialDomCardCount = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]').length : 0;
 
-      // Scan current page DOM cards
+      // 1. ACQUIRE BATCH (Scan current page DOM cards)
+      this.state = "acquiring";
       this.scanCurrentPage();
 
       // Parse expected total count from DOM
@@ -1685,13 +1867,21 @@ class ConnectionAcquisitionSession {
 
       const currentCount = this.connections.size;
       const expectedText = this.expectedTotal ? ` of ${this.expectedTotal}` : '';
-      this.statusMessage = `Acquiring connections (${currentCount}${expectedText})...`;
+      this.statusMessage = `Building your network (${currentCount}${expectedText})...`;
+
+      const isHidden = this.isTabHidden || (typeof document !== "undefined" && document.visibilityState === "hidden");
 
       if (currentCount > previousCollected) {
         noNewRecordsAttempts = 0;
         containerRedetected = false;
-      } else {
+        await this.checkpointSession();
+      } else if (!isHidden) {
         noNewRecordsAttempts++;
+      } else {
+        // Tab is hidden: background throttling is occurring. Do not count as no-progress attempt.
+        await this.checkpointSession();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        continue;
       }
 
       // If explicit expectedTotal is set and we've reached or exceeded it
@@ -1700,6 +1890,7 @@ class ConnectionAcquisitionSession {
         this.completionStatus = "complete";
         this.isPartial = false;
         this.statusMessage = `Acquisition completed: ${currentCount} connections collected across ${this.pageCount} pages/batches.`;
+        await this.checkpointSession();
         await this.autoSyncToBackend();
         break;
       }
@@ -1709,16 +1900,21 @@ class ConnectionAcquisitionSession {
         containerRedetected = true;
       }
 
-      // Trigger container load / pagination
+      // 2. WAITING FOR CONTENT (Trigger container load / pagination)
+      this.state = "waiting_for_content";
+      this.statusMessage = "Loading more connections...";
+      await this.checkpointSession();
+
       const loadRes = this.triggerContainerLoad(this.pageCount);
       const preScrollHeight = loadRes.telemetry ? loadRes.telemetry.scroll_height : 0;
 
-      // Wait for DOM changes / card appends (Wait up to 2000ms for network & DOM rendering)
-      const waitRes = await this.waitForDomCardsToIncrease(initialDomCardCount, 2000, loadRes.container);
+      // Wait for DOM changes / card appends (Observe up to 1500ms)
+      const waitRes = await this.waitForDomCardsToIncrease(initialDomCardCount, 1500, loadRes.container);
 
-      if (waitRes && (waitRes.mutationObserved || waitRes.newCards > 0)) {
+      if (waitRes && waitRes.newCards > 0) {
         noNewRecordsAttempts = 0;
         containerRedetected = false;
+        await this.checkpointSession();
       }
 
       if (this.lastTelemetry) {
@@ -1742,8 +1938,29 @@ class ConnectionAcquisitionSession {
         }
       }
 
-      if (!loadRes.success || noNewRecordsAttempts >= MAX_NO_NEW_ATTEMPTS) {
+      // Check if loader element is present on DOM
+      const hasLoader = !!(typeof document !== "undefined" && typeof document.querySelector === "function" ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]') : null);
+
+      // 3. SETTLING PHASE (Calm batch settling pause before next cycle)
+      if (!this.shouldCancel && loadRes.success && noNewRecordsAttempts < MAX_NO_NEW_ATTEMPTS && (hasLoader || noNewRecordsAttempts < 3)) {
+        this.state = "settling";
+        const delayMs = getRandomAcquisitionDelayMs();
+        const delaySec = (delayMs / 1000).toFixed(1);
+        this.statusMessage = `Checking your network (next batch in ~${delaySec}s)...`;
+        if (this.lastTelemetry) {
+          this.lastTelemetry.next_batch_delay_ms = delayMs;
+          this.lastTelemetry.next_batch_delay_sec = delaySec;
+        }
+        await this.checkpointSession();
+        // Configurable 20–25s calm settling interval between batch cycles
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+
+      await this.checkpointSession();
+
+      if (!loadRes.success || noNewRecordsAttempts >= MAX_NO_NEW_ATTEMPTS || (!hasLoader && noNewRecordsAttempts >= 3)) {
         // Bounded settling phase: If expectedTotal is not reached, check if DOM rendering or network load is still settling
+        this.state = "settling";
         const currentCountCheck = this.connections.size;
         if (this.expectedTotal > 0 && currentCountCheck < this.expectedTotal && !this.shouldCancel) {
           const maxSettlingPasses = 5;
@@ -1785,12 +2002,13 @@ class ConnectionAcquisitionSession {
 
           if (progressResumed) {
             // Settling phase caught new DOM items or rendering progress! Continue acquisition loop!
+            await this.checkpointSession();
             continue;
           }
         }
 
         const finalCount = this.connections.size;
-        const hasLoader = !!document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]');
+        const hasLoader = !!(typeof document !== "undefined" && typeof document.querySelector === "function" ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]') : null);
         const failedExtractionCount = (this.lastTelemetry && this.lastTelemetry.failed_extraction) || 0;
 
         // ACCEPTED-RENDERED-DATASET condition:
@@ -1807,12 +2025,21 @@ class ConnectionAcquisitionSession {
           this.completionStatus = "complete";
           this.isPartial = false;
           this.statusMessage = `All available connections collected (${finalCount} connections).`;
+          await this.checkpointSession();
           await this.autoSyncToBackend();
         } else if (isRenderedComplete) {
           this.state = "completed";
           this.completionStatus = "complete_rendered_dataset";
           this.isPartial = false;
           this.statusMessage = `All available connections extracted (${finalCount} connections).`;
+          await this.checkpointSession();
+          await this.autoSyncToBackend();
+        } else if (this.expectedTotal === 0 && finalCount > 0 && !hasLoader) {
+          this.state = "completed";
+          this.completionStatus = "complete";
+          this.isPartial = false;
+          this.statusMessage = `All available connections extracted (${finalCount} connections).`;
+          await this.checkpointSession();
           await this.autoSyncToBackend();
         } else {
           this.state = "incomplete";
@@ -1821,6 +2048,7 @@ class ConnectionAcquisitionSession {
           this.statusMessage = `Partial acquisition (Incomplete): ${finalCount} / ${this.expectedTotal} connections collected.`;
           this.syncStatus = "blocked";
           this.syncMessage = "Backend sync blocked: Incomplete dataset.";
+          await this.checkpointSession();
         }
         break;
       }
@@ -1830,20 +2058,27 @@ class ConnectionAcquisitionSession {
       this.state = "idle";
       this.statusMessage = "Acquisition cancelled.";
     }
+    await this.checkpointSession();
   }
 
-  start() {
-    if (this.state === "acquiring") {
+  start(stateName = "acquiring") {
+    if ((this.state === "acquiring" || this.state === "collecting" || this.state === "waiting_for_content" || this.state === "settling") && this.activeLoopPromise) {
       return this.getStatus();
     }
-    this.reset(false);
+    if (!this.sessionId) {
+      this.sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    }
+    this.shouldCancel = false;
+    this.state = stateName;
     this.activeLoopPromise = this.runAcquisitionLoop();
+    this.checkpointSessionSync();
     return this.getStatus();
   }
 
   cancel() {
     this.shouldCancel = true;
     this.state = "idle";
+    this.checkpointSessionSync();
     return { success: true };
   }
 
@@ -1853,6 +2088,7 @@ class ConnectionAcquisitionSession {
     const remaining = Math.max(0, expected - collected);
 
     return {
+      sessionId: this.sessionId,
       state: this.state,
       completion_status: this.completionStatus || (this.state === "completed" ? (collected >= expected ? "complete" : "complete_rendered_dataset") : "incomplete"),
       page_count: this.pageCount,
@@ -2014,15 +2250,22 @@ function extractTotalConnectionsFromDom() {
   return null;
 }
 
-function maybeAutoStartAcquisition() {
+async function maybeAutoStartAcquisition() {
   const pageType = getPageType();
-  const url = window.location.href || "";
+  const url = (typeof window !== "undefined" && window.location && window.location.href) ? window.location.href : "";
   if (
     pageType === "linkedin_network" ||
     url.includes("/mynetwork/invite-connect/connections/") ||
     url.includes("connections.html")
   ) {
-    if (acquisitionSession.state === "idle") {
+    await acquisitionSession.initOrHydrateSession();
+    if (
+      acquisitionSession.state === "idle" ||
+      acquisitionSession.state === "acquiring" ||
+      acquisitionSession.state === "waiting_for_content" ||
+      acquisitionSession.state === "settling" ||
+      acquisitionSession.state === "interrupted"
+    ) {
       acquisitionSession.start();
     }
   }
@@ -2030,9 +2273,32 @@ function maybeAutoStartAcquisition() {
 
 setTimeout(maybeAutoStartAcquisition, 100);
 
-window.addEventListener("beforeunload", () => {
-  acquisitionSession.cancel();
-});
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    if (acquisitionSession && ["acquiring", "waiting_for_content", "settling"].includes(acquisitionSession.state)) {
+      acquisitionSession.state = "interrupted";
+      acquisitionSession.checkpointSessionSync();
+    }
+  });
+
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        if (acquisitionSession) {
+          acquisitionSession.isTabHidden = true;
+          acquisitionSession.checkpointSessionSync();
+        }
+      } else if (document.visibilityState === "visible") {
+        if (acquisitionSession) {
+          acquisitionSession.isTabHidden = false;
+          if (acquisitionSession.state === "acquiring" && !acquisitionSession.activeLoopPromise) {
+            acquisitionSession.activeLoopPromise = acquisitionSession.runAcquisitionLoop();
+          }
+        }
+      }
+    });
+  }
+}
 
 
 // =========================================================
@@ -2042,8 +2308,7 @@ window.addEventListener("beforeunload", () => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   try {
     switch (message.action) {
-      case "startAutomatedAcquisition":
-      case "startCollection": {
+      case "startAutomatedAcquisition": {
         let status;
         if (acquisitionSession.state === "acquiring") {
           status = acquisitionSession.getStatus();
@@ -2057,16 +2322,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         break;
       }
-      case "pauseCollection": {
-        // Pausing is mapped to getting current status
+      case "startCollection": {
+        acquisitionSession.reset(true);
+        if (!acquisitionSession.sessionId) {
+          acquisitionSession.sessionId = `warmgraph_session_${Date.now()}`;
+        }
+        acquisitionSession.state = "collecting";
+        acquisitionSession.scanCurrentPage();
+        const status = { ...acquisitionSession.getStatus(), state: "collecting" };
         sendResponse({
           success: true,
-          status: acquisitionSession.getStatus()
+          status,
+          batch: status
+        });
+        break;
+      }
+      case "pauseCollection": {
+        acquisitionSession.state = "paused";
+        acquisitionSession.checkpointSessionSync();
+        const status = { ...acquisitionSession.getStatus(), state: "paused" };
+        sendResponse({
+          success: true,
+          status
         });
         break;
       }
       case "resumeCollection": {
-        const status = acquisitionSession.getStatus();
+        acquisitionSession.state = "collecting";
+        acquisitionSession.scanCurrentPage();
+        const status = { ...acquisitionSession.getStatus(), state: "collecting" };
         sendResponse({
           success: true,
           status,
@@ -2076,13 +2360,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case "finishCollection":
       case "finishAcquisition": {
+        acquisitionSession.scanCurrentPage();
         const res = acquisitionSession.finish();
+        acquisitionSession.reset(true);
         sendResponse(res);
         break;
       }
       case "cancelCollection":
       case "cancelAcquisition": {
         acquisitionSession.cancel();
+        acquisitionSession.reset(true);
         sendResponse({
           success: true,
           status: acquisitionSession.getStatus()
@@ -2091,9 +2378,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case "getCollectionStatus":
       case "getAcquisitionStatus": {
+        let status = acquisitionSession.getStatus();
+        if (message.action === "getCollectionStatus" && status.state === "acquiring") {
+          status = { ...status, state: "collecting" };
+        }
         sendResponse({
           success: true,
-          status: acquisitionSession.getStatus()
+          status
         });
         break;
       }
@@ -2117,11 +2408,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({
             success: acquisitionSession.syncStatus === "synced",
             sync_status: acquisitionSession.syncStatus,
-            sync_message: acquisitionSession.syncMessage
+            sync_message: acquisitionSession.syncMessage,
+            error: acquisitionSession.syncStatus === "synced" ? null : (acquisitionSession.syncMessage || "Backend synchronization failed.")
           });
         }).catch(err => {
           sendResponse({
             success: false,
+            sync_status: "failed",
+            sync_message: err.message,
             error: err.message
           });
         });
