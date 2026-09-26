@@ -1,90 +1,297 @@
-# Warm Graph Extension POC
+# WarmGraph — Relationship Intelligence Platform
 
-Validates: network data -> extension -> FastAPI -> stored network.
+> AI-powered Chrome extension that transforms LinkedIn connections into an interactive warm introduction graph.
 
-The demo intentionally uses a LOCAL mock connections page and fixed test data.
-It does not scrape LinkedIn or bypass LinkedIn controls.
+## Overview
 
-## Backend
-```powershell
+WarmGraph extracts a user's LinkedIn network, builds a relationship graph, and discovers the strongest warm introduction paths between people.
+
+### Core capabilities
+
+* Chrome Extension for LinkedIn network extraction
+* Incremental Sync with pause/resume
+* Interactive Graph Visualization (Cytoscape)
+* Target Person Search
+* Warm Path Generation
+* Explain Path with Relationship Evidence
+* Research & Knowledge Hub
+* Developer Dashboard
+
+---
+
+# Project Structure
+
+```text
+warm_graph_extension_poc/
+│
+├── backend/                # FastAPI graph engine
+│   ├── services/
+│   ├── tests/
+│   └── main.py
+│
+├── extension/              # Chrome Extension (Manifest V3)
+│   ├── popup.html
+│   ├── popup.js
+│   ├── overlay.js
+│   ├── content.js
+│   └── developer_dashboard.html
+│
+├── website/                # SaaS website
+│   ├── index.html
+│   ├── network.html
+│   ├── graph.html
+│   ├── research.html
+│   └── person.html
+│
+└── scratch/                # Development tests
+```
+
+---
+
+# Tech Stack
+
+| Layer         | Technology                     |
+| ------------- | ------------------------------ |
+| Extension     | JavaScript, Manifest V3        |
+| Backend       | FastAPI                        |
+| Graph Engine  | Python                         |
+| Visualization | Cytoscape.js                   |
+| Website       | HTML, CSS, JavaScript          |
+| Storage       | Chrome Storage + Local Storage |
+
+---
+
+# Getting Started
+
+## 1. Backend
+
+```bash
 cd backend
-py -m venv .venv
+
+python -m venv .venv
+
+# Windows
 .venv\Scripts\activate
+
 pip install -r requirements.txt
+
 uvicorn main:app --reload --port 8000
 ```
 
-## Extension
-1. Open chrome://extensions
-2. Enable Developer mode
-3. Load unpacked -> select `extension`
-4. Open the extension
-5. Click Check backend
-6. Click Import demo network
+Backend runs at:
 
-Expected: Imported 3 connections. Owner: banker_A
-
-### Automated Connection Acquisition
-Connections are acquired automatically across paginated views when the user clicks **Start Automated Extraction**. The `ConnectionAcquisitionSession` navigates pagination controls, performs multi-key deterministic deduplication across batches, and tracks progress. If pagination controls are present, acquisition completes upon reaching the end of all pages (`completed`). If no pagination controls are available on a page, acquisition terminates cleanly and reports a partial dataset (`incomplete` / `unsupported`). The user reviews the collected dataset in the popup preview and explicitly confirms via **Confirm & Share** before data is sent to the backend. No automated page scrolling or stealth evasion techniques are used.
-
-
-## PostgreSQL persistence (Phase 2)
-
-The MVP JSON files remain available as the explicit compatibility backend for
-the existing synthetic tests. PostgreSQL is selected when `DATABASE_URL` is
-set, or explicitly with `STORAGE_BACKEND=postgres`. The compatibility
-`owner_id` mapping is a migration aid, not authentication or authorization.
-
-Start a local database with Docker Compose:
-
-```powershell
-docker compose up -d postgres
-cd backend
-pip install -r requirements.txt
-$env:DATABASE_URL = "postgresql://warmgraph:warmgraph_dev@127.0.0.1:5432/warmgraph"
-alembic upgrade head
+```text
+http://127.0.0.1:8000
 ```
 
-Import existing network JSON files without deleting them:
+Swagger Docs:
 
-```powershell
-python scripts/migrate_json_to_postgres.py `
-	--database-url $env:DATABASE_URL
+```text
+http://127.0.0.1:8000/docs
 ```
 
-The normalized schema stores UUID users and tenants, people, companies,
-network memberships, typed relationships, provenance-rich relationship
-evidence, deals, jobs, and audit events. NetworkX graphs can be rebuilt from
-the PostgreSQL repository; the existing graph construction, path discovery,
-and warmth scoring behavior is unchanged.
+---
 
-## Relationship providers and entity resolution (Phase 7)
+## 2. Load Extension
 
-`RelationshipDataProvider` remains the provider boundary. Approved providers
-must return normalized provider-neutral snapshots; they never access FastAPI,
-repositories, or NetworkX. `MockRelationshipDataProvider` is fixture-only and
-is used for deterministic local tests. `ApprovedRelationshipDataProvider`
-continues to fail clearly when no licensed/API implementation is configured.
+1. Open Chrome
+2. Visit `chrome://extensions`
+3. Enable **Developer Mode**
+4. Click **Load Unpacked**
+5. Select the `extension/` folder
 
-Provider ingestion passes through `ProviderIngestionService` and the
-tenant-scoped repository. People resolve in this order: provider record ID,
-canonical profile URL, normalized email, then normalized name plus company or
-headline. Ambiguous name-only matches are not merged. Companies resolve by
-provider ID, canonical domain, or a unique normalized name. Resolution method,
-confidence, outcome, provider ID, observation time, and source metadata remain
-persisted for auditability.
+The WarmGraph icon should now appear.
 
-## Development authentication
+---
 
-The legacy default is `AUTH_MODE=compatibility`, which preserves the original
-synthetic extension contract but is not authentication and must not be used in
-production. For authenticated local testing, set `AUTH_MODE=development` and
-configure `DEV_AUTH_TOKEN` plus `DEV_OWNER_ID`, or provide a JSON
-`DEV_AUTH_TOKENS` mapping from tokens to `{user_id, tenant_id, owner_id, roles}`.
-Send the token as `X-WarmGraph-Dev-Token`. The server validates every
-owner-scoped request against the authenticated development context. A future
-OIDC/JWT adapter can replace this dependency without changing repositories or
-business logic. `AUTH_MODE=disabled` fails closed for protected requests.
+## 3. Run Website
 
-## Next
-Once an approved LinkedIn data-access mechanism is available, replace only the demo ingestion source. Keep the backend/graph architecture.
+```bash
+cd website
+python -m http.server 5500
+```
+
+Open:
+
+```text
+http://localhost:5500
+```
+
+---
+
+# How to Use WarmGraph
+
+## Step 1 — Import LinkedIn Network
+
+Open:
+
+```text
+https://www.linkedin.com/mynetwork/invite-connect/connections/
+```
+
+Click **Sync Network**.
+
+WarmGraph automatically:
+
+* Scrolls the page
+* Extracts connections
+* Removes duplicates
+* Builds the graph
+* Syncs to backend
+
+When complete you'll see:
+
+> You're all caught up ✨
+
+---
+
+## Step 2 — Search a Target
+
+Open the popup.
+
+Enter:
+
+* Company
+* Deal Side
+* Optional Role
+
+Example:
+
+```text
+Company: HPE
+Role: AI Engineer
+```
+
+Click **Find Target Person**.
+
+---
+
+## Step 3 — Generate Warm Path
+
+Select a returned person.
+
+Click **Find Warm Path**.
+
+Example output:
+
+```text
+You
+↓
+Bipin Raj
+↓
+Reshma Hegde
+```
+
+---
+
+## Step 4 — Explain the Relationship
+
+Click **Explain Path**.
+
+WarmGraph displays structured relationship evidence such as:
+
+* Same College
+* Student ↔ Faculty
+* Same Department
+* Same Company
+* Same City
+* LinkedIn 1st Degree
+
+Each evidence includes a confidence score.
+
+---
+
+## Interactive Graph
+
+Open:
+
+```text
+website/graph.html
+```
+
+Features:
+
+* Zoom
+* Pan
+* Drag nodes
+* Search people
+* Highlight warm paths
+* Click node → profile drawer
+
+---
+
+## Research Hub
+
+Open:
+
+```text
+website/research.html
+```
+
+Supports:
+
+* Company research
+* Person notes
+* Markdown editor
+* Saved notes
+* Warm path references
+
+Notes are currently stored locally.
+
+---
+
+## Developer Dashboard
+
+Accessible from the extension popup.
+
+Displays:
+
+* Extraction health
+* Sync status
+* Connection count
+* Graph nodes
+* Relationship evidence
+* Diagnostics
+
+This dashboard is **local to the current user**.
+
+---
+
+# Current MVP Status
+
+| Feature             | Status |
+| ------------------- | ------ |
+| LinkedIn Extraction | ✅      |
+| Incremental Sync    | ✅      |
+| Warm Path           | ✅      |
+| Explain Path        | ✅      |
+| Interactive Graph   | ✅      |
+| Research Hub        | ✅      |
+| Developer Dashboard | ✅      |
+
+---
+
+# Roadmap
+
+## v1.1 (Current)
+
+* Production MVP
+* Interactive Graph
+* Research Hub
+* Relationship Evidence
+
+## v2.0
+
+* Multi-user Cloud Database
+* Authentication
+* Admin Dashboard
+* Network Analytics
+* CRM Integration
+
+---
+
+# Important Note
+
+WarmGraph currently operates in **local-first mode**.
+
+Each user's graph is stored in Chrome Storage and synchronized with the local FastAPI backend. Multi-user cloud synchronization will be introduced in the next release (v2.0).
