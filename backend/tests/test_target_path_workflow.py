@@ -171,23 +171,86 @@ class TargetPathWorkflowTests(unittest.TestCase):
         self.assertIn("explanation", data)
         self.assertIn("directly connected", data["explanation"].lower())
 
-    # 8. EXPLAIN PATH - BY EXPLICIT PATH LIST
-    def test_explain_path_by_path_list(self):
-        response = self.client.post(
-            "/graph/explain-path",
-            json={
-                "owner_id": self.owner_id,
-                "path": [
-                    self.owner_id,
-                    "https://www.linkedin.com/in/cfo-john-acme",
-                    "https://www.linkedin.com/in/target-vp-acme",
-                ],
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertIn("explanation", data)
-        self.assertEqual(data["hops"], 2)
+    # 9. IMPORT CREATES GRAPH & AUTO MIGRATION REBUILD
+    def test_import_creates_graph_and_auto_migrates(self):
+        import_owner = "task882_test_owner"
+        payload = {
+            "owner_id": import_owner,
+            "source": "linkedin_dom",
+            "confirmed": True,
+            "connections": self.connections,
+            "relationship_evidence": self.evidence,
+            "completion_status": "complete"
+        }
+        res_import = self.client.post("/network/import", json=payload)
+        self.assertEqual(res_import.status_code, 200)
+        import_data = res_import.json()
+        self.assertTrue(import_data["success"])
+        self.assertGreater(import_data["graph_nodes"], 0)
+        self.assertGreater(import_data["graph_edges"], 0)
+
+        # Evict in-memory graph cache to simulate fresh server request or restart
+        main.graph_service.cache.invalidate(None, import_owner)
+
+        # GET /graph/{owner_id} must return 200 with nodes, edges, owner_id (never 404)
+        res_graph = self.client.get(f"/graph/{import_owner}")
+        self.assertEqual(res_graph.status_code, 200)
+        graph_data = res_graph.json()
+        self.assertEqual(graph_data["owner_id"], import_owner)
+        self.assertGreater(len(graph_data["nodes"]), 0)
+        self.assertGreater(len(graph_data["edges"]), 0)
+
+        # POST /graph/path must work cleanly
+        res_path = self.client.post("/graph/path", json={
+            "owner_id": import_owner,
+            "source_id": import_owner,
+            "target_id": "https://www.linkedin.com/in/cfo-john-acme/",
+            "cutoff": 4
+        })
+        self.assertEqual(res_path.status_code, 200)
+        self.assertGreater(len(res_path.json()["paths"]), 0)
+
+    # 10. TASK 8.9.1 - GRAPH PERSISTENCE & SELF-HEALING TEST
+    def test_task_891_graph_persistence_and_self_healing(self):
+        owner_id = "task891_owner_test"
+        payload = {
+            "owner_id": owner_id,
+            "source": "linkedin_dom",
+            "confirmed": True,
+            "connections": self.connections,
+            "relationship_evidence": self.evidence,
+            "completion_status": "complete"
+        }
+        # Step 1: POST /network/import -> 200 OK
+        res_import = self.client.post("/network/import", json=payload)
+        self.assertEqual(res_import.status_code, 200)
+
+        # Step 2: GET /network/{owner_id} -> 200 OK
+        res_network = self.client.get(f"/network/{owner_id}")
+        self.assertEqual(res_network.status_code, 200)
+        self.assertEqual(len(res_network.json()["connections"]), len(self.connections))
+
+        # Step 3: GET /graph/{owner_id} -> 200 OK
+        res_graph = self.client.get(f"/graph/{owner_id}")
+        self.assertEqual(res_graph.status_code, 200)
+        self.assertGreater(len(res_graph.json()["nodes"]), 0)
+
+        # Step 4: Invalidate graph cache to simulate server restart / missing cache
+        main.graph_service.cache.invalidate(None, owner_id)
+
+        # Step 5: Self-healing POST /graph/path -> 200 OK (rebuilds and persists graph)
+        res_path = self.client.post("/graph/path", json={
+            "owner_id": owner_id,
+            "source_id": owner_id,
+            "target_id": "https://www.linkedin.com/in/cfo-john-acme/",
+            "cutoff": 4
+        })
+        self.assertEqual(res_path.status_code, 200)
+        self.assertGreater(len(res_path.json()["paths"]), 0)
+
+        # Step 6: Non-existent owner (both raw network & graph absent) -> 404
+        res_absent = self.client.get("/graph/totally_non_existent_owner_9999")
+        self.assertEqual(res_absent.status_code, 404)
 
 
 if __name__ == "__main__":

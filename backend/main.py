@@ -118,6 +118,20 @@ for storage_dir in (JOBS_DIR, AUDIT_DIR, DEALS_DIR, FIXTURES_DIR):
 
 graph_service = GraphService()
 GRAPHS = graph_service.cache
+
+class GraphRepository:
+    """Repository interface wrapper for GraphService persistence and retrieval."""
+    def get_graph(self, owner_id: str, auth_context: AuthContext | None = None) -> nx.DiGraph | None:
+        try:
+            return graph_service.get_owner_graph(owner_id, auth_context=auth_context, load_network_fn=load_network)
+        except HTTPException:
+            return None
+
+    def replace_graph(self, owner_id: str, graph: nx.DiGraph, auth_context: AuthContext | None = None) -> nx.DiGraph:
+        return graph_service.replace_graph(owner_id, graph, auth_context=auth_context)
+
+graph_repository = GraphRepository()
+
 JOBS: dict[str, dict[str, Any]] = {}
 ROLE_PRIORITIES = {
     "sell_side": ["CFO", "Head of Corporate Development", "CEO", "VP Corporate Development"],
@@ -276,9 +290,13 @@ class RelationshipRequest(BaseModel):
 class PathRequest(BaseModel):
     owner_id: str
 
-    source_id: str
+    source_id: str | None = None
 
-    target_id: str
+    target_id: str | None = None
+
+    target_url: str | None = None
+
+    target_name: str | None = None
 
     cutoff: int = 4
 
@@ -393,6 +411,54 @@ def save_network(
     )
 
 
+def find_and_bind_latest_imported_network(
+    owner_id: str,
+    auth_context: AuthContext | None = None,
+) -> dict[str, Any] | None:
+    """
+    Step 4 Repair Layer: If graph(owner_id) is missing, check DATA_DIR for existing
+    imported network snapshots for this owner (handling slug variations like hyphens vs underscores).
+    If found, bind it to owner_id so Warm Path works normally without requiring another import.
+    """
+    try:
+        if not DATA_DIR.exists():
+            return None
+
+        json_files = list(DATA_DIR.glob("*.json"))
+        if not json_files:
+            return None
+
+        normalized_target_owner = (owner_id or "").casefold().replace("-", "").replace("_", "")
+
+        # Sort by modification time descending (latest imported dataset first)
+        json_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        for filepath in json_files:
+            try:
+                data = json.loads(filepath.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+
+                connections = data.get("connections", [])
+                evidence = data.get("relationship_evidence", [])
+                if not connections and not evidence:
+                    continue
+
+                file_owner = data.get("owner_id") or filepath.stem
+                normalized_file_owner = (file_owner or "").casefold().replace("-", "").replace("_", "")
+
+                # Strict owner matching: bind only if dataset belongs to the same owner
+                if normalized_file_owner and normalized_file_owner == normalized_target_owner:
+                    data["owner_id"] = owner_id
+                    save_network(owner_id, data, auth_context)
+                    return data
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def load_network(
     owner_id: str,
     auth_context: AuthContext | None = None,
@@ -404,7 +470,9 @@ def load_network(
             if isinstance(auth_context, AuthContext) and auth_context.authenticated
             else None
         )
-        return repository.load_network(owner_id, tenant_id)
+        loaded = repository.load_network(owner_id, tenant_id)
+        if loaded is not None:
+            return loaded
 
     path = network_path(owner_id)
 
@@ -413,6 +481,9 @@ def load_network(
         if fixture_path.exists() and (is_demo_mode() or owner_id in {"final_demo_owner", "test_owner", "empty_test_owner"}):
             path = fixture_path
         else:
+            fallback = find_and_bind_latest_imported_network(owner_id, auth_context)
+            if fallback is not None:
+                return fallback
             return None
 
     try:
@@ -961,10 +1032,22 @@ def import_network(
         auth_context=auth_context,
     )
 
-    # Rebuild ONLY this owner's graph. Other owners' in-memory graphs
-    # are untouched, so nobody's import can ever affect someone else's
-    # data.
-    owner_graph = rebuild_owner_graph(request.owner_id, auth_context)
+    # Rebuild, replace, and verify this owner's graph
+    graph = graph_service.build_from_connections(request.owner_id, network_data=network_data, auth_context=auth_context)
+
+    graph_repository.replace_graph(
+        owner_id=request.owner_id,
+        graph=graph,
+        auth_context=auth_context,
+    )
+
+    stored = graph_repository.get_graph(request.owner_id, auth_context=auth_context)
+
+    if stored is None or stored.number_of_nodes() == 0:
+        raise HTTPException(
+            status_code=500,
+            detail="Graph persistence failed after import."
+        )
 
     return {
         "success": True,
@@ -979,10 +1062,10 @@ def import_network(
             len(merged_evidence),
 
         "graph_nodes":
-            owner_graph.number_of_nodes() if owner_graph else 0,
+            stored.number_of_nodes(),
 
         "graph_edges":
-            owner_graph.number_of_edges() if owner_graph else 0
+            stored.number_of_edges()
     }
 
 
@@ -1076,7 +1159,24 @@ def get_graph(
 ):
     authorized_context(owner_id, auth_context)
 
-    graph = get_owner_graph(owner_id, auth_context=auth_context)
+    try:
+        graph = get_owner_graph(owner_id, auth_context=auth_context)
+    except HTTPException as e:
+        if e.status_code == 404:
+            network_data = load_network(owner_id, auth_context) or find_and_bind_latest_imported_network(owner_id, auth_context)
+            if network_data and (network_data.get("connections") or network_data.get("relationship_evidence")):
+                graph = rebuild_owner_graph(owner_id, auth_context)
+            else:
+                raise e
+        else:
+            raise e
+
+    if graph is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No graph found for owner '{owner_id}'."
+        )
+
     serialized = graph_service.serialize_graph(owner_id, graph)
 
     audit_log(owner_id, "graph_read", "completed", record_count=len(serialized["edges"]), auth_context=auth_context)
@@ -1143,10 +1243,22 @@ def find_paths(
 ):
     authorized_context(request.owner_id, auth_context)
 
+    source_id = request.source_id or request.owner_id
+    target_id = request.target_id
+    target_url = request.target_url
+
+    if not target_id and not target_url and not request.target_name:
+        raise HTTPException(
+            status_code=400,
+            detail="target_id, target_url, or target_name is required"
+        )
+
     result = graph_service.find_paths(
         owner_id=request.owner_id,
-        source_id=request.source_id,
-        target_id=request.target_id,
+        source_id=source_id,
+        target_id=target_id,
+        target_url=target_url,
+        target_name=request.target_name,
         cutoff=request.cutoff,
         auth_context=auth_context,
         load_network_fn=load_network,
@@ -1517,6 +1629,8 @@ def explain_path(
         path=request.get("path"),
         source_id=request.get("source_id"),
         target_id=request.get("target_id"),
+        target_url=request.get("target_url"),
+        target_name=request.get("target_name"),
         cutoff=request.get("cutoff", 4),
         auth_context=auth_context,
         load_network_fn=load_network,

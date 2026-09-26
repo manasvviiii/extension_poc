@@ -34,15 +34,17 @@ class TenantGraphCache(MutableMapping[str, nx.DiGraph]):
         owner_id: str,
     ) -> nx.DiGraph | None:
         tenant_key = normalize_tenant_key(tenant_id)
+        norm_owner = (owner_id or "").casefold().replace("-", "").replace("_", "")
         with self._lock:
             graph = self._cache.get((tenant_key, owner_id))
             if graph is not None:
                 return graph
-            # Fallback check for compatibility tenant if tenant_id wasn't specified
-            if tenant_key != "compatibility":
-                return None
+
+            # Fallback search within the same tenant or compatibility tenant for owner slug variants
             for (t_key, o_id), g in self._cache.items():
-                if o_id == owner_id:
+                if (t_key == tenant_key or t_key == "compatibility" or tenant_key == "compatibility") and (
+                    o_id == owner_id or (o_id and (o_id or "").casefold().replace("-", "").replace("_", "") == norm_owner)
+                ):
                     return g
             return None
 
@@ -53,10 +55,13 @@ class TenantGraphCache(MutableMapping[str, nx.DiGraph]):
         graph: nx.DiGraph,
     ) -> None:
         tenant_key = normalize_tenant_key(tenant_id)
+        norm_owner = (owner_id or "").casefold().replace("-", "").replace("_", "")
         with self._lock:
             keys_to_remove = [
                 key for key in self._cache
-                if key[1] == owner_id and (key[0] == tenant_key or key[0] == "compatibility" or tenant_key == "compatibility")
+                if (key[0] == tenant_key or key[0] == "compatibility" or tenant_key == "compatibility") and (
+                    key[1] == owner_id or (key[1] and key[1].casefold().replace("-", "").replace("_", "") == norm_owner)
+                )
             ]
             for key in keys_to_remove:
                 del self._cache[key]
@@ -68,10 +73,13 @@ class TenantGraphCache(MutableMapping[str, nx.DiGraph]):
         owner_id: str,
     ) -> bool:
         tenant_key = normalize_tenant_key(tenant_id)
+        norm_owner = (owner_id or "").casefold().replace("-", "").replace("_", "")
         with self._lock:
             keys_to_remove = [
                 key for key in self._cache
-                if key[1] == owner_id and (key[0] == tenant_key or key[0] == "compatibility" or tenant_key == "compatibility")
+                if (key[0] == tenant_key or key[0] == "compatibility" or tenant_key == "compatibility") and (
+                    key[1] == owner_id or (key[1] and key[1].casefold().replace("-", "").replace("_", "") == norm_owner)
+                )
             ]
             for key in keys_to_remove:
                 del self._cache[key]

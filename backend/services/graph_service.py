@@ -31,6 +31,46 @@ def normalized_person_name(value: str | None) -> str:
     )
 
 
+def normalize_profile_url(value: str | None) -> str | None:
+    """
+    Treat these as identical:
+    - linkedin.com/in/bipin-raj-c-b61670283
+    - linkedin.com/in/bipin-raj-c-b61670283/
+    - https://www.linkedin.com/in/bipin-raj-c-b61670283
+    """
+    if not value or not isinstance(value, str):
+        return None
+    val = value.strip().casefold()
+    if not val:
+        return None
+    val = val.split("?")[0].split("#")[0]
+    match = re.search(r"/in/([^/]+)", val)
+    if match:
+        slug = match.group(1).strip()
+        return f"https://www.linkedin.com/in/{slug}"
+    val = re.sub(r"^https?://", "", val)
+    val = re.sub(r"^www\.", "", val)
+    val = val.rstrip("/")
+    if val.startswith("linkedin.com/in/"):
+        slug = val.replace("linkedin.com/in/", "").strip()
+        return f"https://www.linkedin.com/in/{slug}"
+    return val
+
+
+def extract_linkedin_slug(value: str | None) -> str | None:
+    if not value or not isinstance(value, str):
+        return None
+    val = value.strip().casefold()
+    match = re.search(r"/in/([^/?#]+)", val)
+    if match:
+        return match.group(1).strip()
+    val = re.sub(r"^https?://", "", val)
+    val = re.sub(r"^www\.", "", val)
+    val = re.sub(r"^linkedin\.com/in/", "", val)
+    val = val.strip("/").split("?")[0].split("#")[0]
+    return val if val else None
+
+
 def build_graph_from_network(
     owner_id: str,
     network_data: dict[str, Any]
@@ -146,16 +186,16 @@ class GraphService:
         tenant_id = context.tenant_id if isinstance(context, AuthContext) and context.authenticated else None
 
         cached_graph = self.cache.get_graph(tenant_id, owner_id)
-        if cached_graph is not None:
+        if cached_graph is not None and cached_graph.number_of_nodes() > 0:
             security_audit("graph_cache_hit", "success", {"owner_id": owner_id})
             return cached_graph
 
         security_audit("graph_cache_miss", "info", {"owner_id": owner_id})
         if load_network_fn is not None:
             network_data = load_network_fn(owner_id, context)
-            if network_data is not None:
+            if network_data is not None and (network_data.get("connections") or network_data.get("relationship_evidence")):
                 graph = build_graph_from_network(owner_id, network_data)
-                self.cache.set_graph(tenant_id, owner_id, graph)
+                self.replace_graph(owner_id, graph, auth_context=context)
                 security_audit("graph_rebuild", "completed", {"owner_id": owner_id, "nodes": graph.number_of_nodes()})
                 return graph
 
@@ -166,6 +206,42 @@ class GraphService:
                 "Import a network for this owner first."
             )
         )
+
+    def build_from_connections(
+        self,
+        owner_id: str,
+        network_data: dict[str, Any] | None = None,
+        auth_context: AuthContext | None = None,
+        load_network_fn: Callable[[str, AuthContext | None], dict[str, Any] | None] | None = None,
+    ) -> nx.DiGraph:
+        """
+        Build direct KNOWS and 2nd degree OBSERVED_MUTUAL edges into a graph for owner.
+        """
+        if network_data is None and load_network_fn is not None:
+            network_data = load_network_fn(owner_id, auth_context)
+        if not network_data:
+            network_data = {"owner_id": owner_id, "connections": [], "relationship_evidence": []}
+        return build_graph_from_network(owner_id, network_data)
+
+    def replace_graph(
+        self,
+        owner_id: str,
+        graph: nx.DiGraph,
+        auth_context: AuthContext | None = None,
+    ) -> nx.DiGraph:
+        """
+        Delete previous graph for owner and insert new nodes + edges into repository/cache.
+        """
+        context = auth_context if isinstance(auth_context, AuthContext) else current_context()
+        tenant_id = context.tenant_id if isinstance(context, AuthContext) and context.authenticated else None
+        self.cache.invalidate(tenant_id, owner_id)
+        self.cache.set_graph(tenant_id, owner_id, graph)
+        security_audit("graph_replaced", "completed", {
+            "owner_id": owner_id,
+            "nodes": graph.number_of_nodes(),
+            "edges": graph.number_of_edges(),
+        })
+        return graph
 
     def invalidate_owner_graph(
         self,
@@ -184,14 +260,11 @@ class GraphService:
         auth_context: AuthContext | None = None,
     ) -> nx.DiGraph | None:
         context = auth_context if isinstance(auth_context, AuthContext) else current_context()
-        tenant_id = context.tenant_id if isinstance(context, AuthContext) and context.authenticated else None
         if network_data is None:
-            self.cache.invalidate(tenant_id, owner_id)
+            self.invalidate_owner_graph(owner_id, auth_context=context)
             return None
         graph = build_graph_from_network(owner_id, network_data)
-        self.cache.set_graph(tenant_id, owner_id, graph)
-        security_audit("graph_rebuilt", "completed", {"owner_id": owner_id, "nodes": graph.number_of_nodes()})
-        return graph
+        return self.replace_graph(owner_id, graph, auth_context=context)
 
     def serialize_graph(self, owner_id: str, graph: nx.DiGraph) -> dict[str, Any]:
         nodes = []
@@ -208,40 +281,82 @@ class GraphService:
             "edges": edges,
         }
 
-    def resolve_node_id(self, graph: nx.DiGraph, query: str | None) -> str | None:
-        if not query or not isinstance(query, str):
+    def find_node(
+        self,
+        graph: nx.DiGraph,
+        profile_url: str | None = None,
+        slug: str | None = None,
+        name: str | None = None,
+    ) -> str | None:
+        """
+        Canonicalize target node resolution in priority order:
+        1. Exact profile URL
+        2. Normalized profile URL
+        3. LinkedIn slug
+        4. Stored node_id
+        5. Case-insensitive name match
+        """
+        if not graph:
             return None
-        q = query.strip()
-        if not q:
-            return None
-        if q in graph:
-            return q
-        normalized = profile_node_id(q)
-        if normalized in graph:
-            return normalized
 
-        q_lower = q.casefold()
-        norm_lower = normalized.casefold()
+        norm_target_url = normalize_profile_url(profile_url) or normalize_profile_url(slug)
+        target_slug = extract_linkedin_slug(slug) or extract_linkedin_slug(profile_url)
+        norm_name = normalized_person_name(name) or normalized_person_name(slug if slug and not slug.startswith("http") else None)
 
-        # Iterate graph nodes to match profile_url, label, or case-insensitive node ID
+        # 1. Exact profile URL / exact node_id match
+        if profile_url and profile_url in graph:
+            return profile_url
+        if slug and slug in graph:
+            return slug
+
         for node_id, attrs in graph.nodes(data=True):
-            nid_str = str(node_id)
-            if nid_str.casefold() == norm_lower or nid_str.casefold() == q_lower:
-                return nid_str
-            p_url = str(attrs.get("profile_url") or "")
-            if p_url:
-                if p_url.casefold() == q_lower or profile_node_id(p_url).casefold() == norm_lower:
-                    return nid_str
-            lbl = str(attrs.get("label") or "")
-            if lbl and (lbl.casefold() == q_lower or lbl.casefold() == norm_lower):
-                return nid_str
+            p_url = attrs.get("profile_url")
+            if profile_url and (p_url == profile_url or str(node_id) == profile_url):
+                return str(node_id)
+
+        # 2. Normalized profile URL
+        if norm_target_url:
+            for node_id, attrs in graph.nodes(data=True):
+                p_url = attrs.get("profile_url")
+                if normalize_profile_url(str(node_id)) == norm_target_url or normalize_profile_url(p_url) == norm_target_url:
+                    return str(node_id)
+
+        # 3. LinkedIn slug
+        if target_slug:
+            for node_id, attrs in graph.nodes(data=True):
+                p_url = attrs.get("profile_url")
+                n_slug = extract_linkedin_slug(str(node_id)) or extract_linkedin_slug(p_url)
+                if n_slug and n_slug == target_slug:
+                    return str(node_id)
+
+        # 4. Stored node_id (case-insensitive / profile_node_id match)
+        if slug:
+            clean_slug = profile_node_id(slug).casefold()
+            for node_id, attrs in graph.nodes(data=True):
+                if str(node_id).casefold() == clean_slug or profile_node_id(str(node_id)).casefold() == clean_slug:
+                    return str(node_id)
+
+        # 5. Case-insensitive name match
+        if norm_name:
+            for node_id, attrs in graph.nodes(data=True):
+                lbl = attrs.get("label") or attrs.get("name")
+                if lbl and normalized_person_name(lbl) == norm_name:
+                    return str(node_id)
+
         return None
+
+    def resolve_node_id(self, graph: nx.DiGraph, query: str | None) -> str | None:
+        if not query:
+            return None
+        return self.find_node(graph, profile_url=query, slug=query, name=query)
 
     def find_paths(
         self,
         owner_id: str,
-        source_id: str,
-        target_id: str,
+        source_id: str | None = None,
+        target_id: str | None = None,
+        target_url: str | None = None,
+        target_name: str | None = None,
         cutoff: int = 4,
         auth_context: AuthContext | None = None,
         load_network_fn: Callable[[str, AuthContext | None], dict[str, Any] | None] | None = None,
@@ -249,19 +364,23 @@ class GraphService:
         start_time = time.perf_counter()
         graph = self.get_owner_graph(owner_id, auth_context, load_network_fn)
 
-        resolved_source = self.resolve_node_id(graph, source_id) or source_id
-        resolved_target = self.resolve_node_id(graph, target_id) or target_id
+        resolved_source = self.find_node(graph, profile_url=source_id, slug=source_id, name=owner_id) or source_id or owner_id
+        resolved_target = self.find_node(graph, profile_url=target_url, slug=target_id, name=target_name)
+
+        if not resolved_target:
+            resolved_target = self.find_node(graph, profile_url=target_id, slug=target_url, name=target_name)
 
         if resolved_source not in graph:
             raise HTTPException(
                 status_code=404,
-                detail=f"Source node '{source_id}' not found in graph."
+                detail=f"Source node '{source_id or owner_id}' not found in graph."
             )
 
-        if resolved_target not in graph:
+        if not resolved_target or resolved_target not in graph:
+            target_desc = target_name or target_id or target_url or "unknown"
             raise HTTPException(
                 status_code=404,
-                detail=f"Target node '{target_id}' not found in graph."
+                detail=f"Target node '{target_desc}' not found in graph."
             )
 
         effective_cutoff = min(max(cutoff, 0), 4)
@@ -305,6 +424,8 @@ class GraphService:
         path: list[str] | None = None,
         source_id: str | None = None,
         target_id: str | None = None,
+        target_url: str | None = None,
+        target_name: str | None = None,
         cutoff: int = 4,
         auth_context: AuthContext | None = None,
         load_network_fn: Callable[[str, AuthContext | None], dict[str, Any] | None] | None = None,
@@ -313,17 +434,19 @@ class GraphService:
 
         if not path:
             effective_source = source_id or owner_id
-            resolved_target = self.resolve_node_id(graph, target_id) if target_id else None
+            resolved_target = self.find_node(graph, profile_url=target_url, slug=target_id, name=target_name)
             if not resolved_target:
                 raise HTTPException(
                     status_code=400,
-                    detail="target_id is required"
+                    detail="target_id or target_url is required"
                 )
 
             path_result = self.find_paths(
                 owner_id=owner_id,
                 source_id=effective_source,
-                target_id=resolved_target,
+                target_id=target_id,
+                target_url=target_url,
+                target_name=target_name,
                 cutoff=cutoff,
                 auth_context=auth_context,
                 load_network_fn=load_network_fn,
