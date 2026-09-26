@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Person Research — WarmGraph Intelligence</title>
+  <meta name="description" content="Contact relationship profile, structured evidence badges, mutual connections, and markdown notes.">
+  <link rel="stylesheet" href="css/global.css">
+  <link rel="stylesheet" href="css/research.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Floating Translucent Navbar -->
+  <header class="header">
+    <div class="container nav-container">
+      <a href="index.html" class="logo-link">
+        <div class="logo-badge">
+          <svg viewBox="0 0 24 24">
+            <circle cx="6" cy="6" r="3" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="12" cy="18" r="3" />
+            <path d="M8.5 7.5L15.5 7.5 M7.5 8.5L10.5 15.5 M16.5 8.5L13.5 15.5" stroke="currentColor" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <span class="logo-text">Warm<span>Graph</span></span>
+      </a>
+
+      <ul class="nav-links">
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="index.html#how-it-works" class="nav-link">How It Works</a></li>
+        <li><a href="knowledge.html" class="nav-link">Knowledge Hub</a></li>
+        <li><a href="network.html" class="nav-link">My Network</a></li>
+        <li><a href="research.html" class="nav-link active">Research Hub</a></li>
+      </ul>
+
+      <div style="display: flex; align-items: center; gap: 16px;">
+        <button class="nav-cta-btn open-install-modal">
+          <span>Get Extension</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+        <button class="mobile-toggle" aria-label="Toggle Navigation Menu">☰</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Person Page Container -->
+  <div class="container research-container">
+    
+    <!-- Left Sidebar -->
+    <aside class="research-sidebar">
+      <div class="sidebar-title">PERSON RESEARCH</div>
+      
+      <div class="sidebar-search-box">
+        <input type="text" id="person-sidebar-search" placeholder="Search people..." autocomplete="off">
+      </div>
+
+      <ul class="sidebar-nav-list" id="person-list-sidebar">
+        <!-- Dynamically populated from imported network -->
+      </ul>
+
+      <div style="margin-top: 10px;">
+        <a href="research.html" style="color: #38bdf8; font-size: 0.85rem; text-decoration: none;">← Back to Workspace</a>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="research-main">
+      
+      <!-- Person Profile Hero Card -->
+      <section class="research-card">
+        <div class="research-header">
+          <div style="display: flex; align-items: center; gap: 20px;">
+            <div style="width: 72px; height: 72px; border-radius: 50%; background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.75rem; border: 3px solid rgba(56, 189, 248, 0.4);" id="person-avatar">
+              WG
+            </div>
+
+            <div class="research-title-group">
+              <h1 class="research-title" id="person-name">Select a Contact</h1>
+              <p class="research-subtitle" id="person-headline">LinkedIn Connection</p>
+              
+              <div class="tag-container" id="person-badges">
+                <span class="tag-pill">⚡ 1st Degree Connection</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Relationship Evidence Engine Badges Section -->
+      <section class="research-card">
+        <div class="section-heading">
+          <span>🔍 Explainable Relationship Evidence</span>
+        </div>
+
+        <div class="related-grid" id="person-evidence-grid">
+          <!-- Dynamically populated from imported network -->
+        </div>
+      </section>
+
+      <!-- Connected Mutuals Section -->
+      <section class="research-card">
+        <div class="section-heading">
+          <span>👥 Connected Mutual Connections & Bridge Nodes</span>
+        </div>
+
+        <div class="related-grid" id="person-mutuals-grid">
+          <!-- Dynamically populated from imported network -->
+        </div>
+      </section>
+      </section>
+
+      <!-- Person Markdown Notes Section -->
+      <section class="research-card">
+        <div class="section-heading">
+          <span>📝 Research Notes & Contact Journal</span>
+          <span class="save-status" id="person-save-status">✓ Saved locally</span>
+        </div>
+
+        <div class="markdown-wrapper">
+          <div class="markdown-controls">
+            <div class="tab-buttons">
+              <button class="tab-btn active" id="person-tab-write">Write Markdown</button>
+              <button class="tab-btn" id="person-tab-preview">Preview Rendered</button>
+            </div>
+          </div>
+
+          <div id="person-editor-container">
+            <textarea id="person-markdown-input" class="editor-textarea" spellcheck="false" placeholder="Write markdown notes about this contact..."></textarea>
+          </div>
+
+          <div id="person-preview-container" class="markdown-rendered" style="display: none;">
+            <!-- Rendered HTML Markdown output -->
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-bottom">
+        <span>&copy; 2026 WarmGraph Inc. Person Relationship Profile.</span>
+        <a href="research.html" style="color: #38bdf8; text-decoration: none;">← Back to Research Workspace</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/app.js"></script>
+  <script src="js/research.js"></script>
+</body>
+</html>

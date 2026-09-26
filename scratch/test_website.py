@@ -55,6 +55,26 @@ class TestWarmGraphPublicWebsiteStructure(unittest.TestCase):
         self.assertIn("Persistent acquisition", content)
         self.assertIn("Public Website", content)
 
+    def test_interactive_demo_section(self):
+        """Verify Task 6 Interactive Product Demo section exists with preset targets & mock data."""
+        index_path = os.path.join(self.website_dir, "index.html")
+        with open(index_path, "r", encoding="utf-8") as f:
+            index_content = f.read()
+
+        self.assertIn('id="demo"', index_content)
+        self.assertIn("See WarmGraph Think", index_content)
+        self.assertIn("Elena Rostova", index_content)
+        self.assertIn("David Vance", index_content)
+        self.assertIn("Michael Chen", index_content)
+
+        app_js_path = os.path.join(self.website_dir, "js", "app.js")
+        with open(app_js_path, "r", encoding="utf-8") as f:
+            app_js_content = f.read()
+
+        self.assertIn("initInteractiveDemo", app_js_content)
+        self.assertIn("Sarah Jenkins", app_js_content)
+        self.assertIn("Warm Score", index_content)
+
     def test_no_external_modifications(self):
         """Verify that external production folders remained untouched."""
         for p in ["extension", "backend", "mock_network"]:

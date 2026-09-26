@@ -1,0 +1,385 @@
+/* =========================================================
+   WarmGraph SaaS — Research & Knowledge Hub CSS (Task 12.0)
+   Linear × Vercel Design System
+   Background: #0B1220 | Accent: #2563EB | Radius: 16px
+   ========================================================= */
+
+:root {
+  --rg-bg: #0B1220;
+  --rg-surface: #111827;
+  --rg-surface-hover: #1f2937;
+  --rg-border: #1F2937;
+  --rg-border-glass: rgba(255, 255, 255, 0.08);
+  --rg-border-active: rgba(37, 99, 235, 0.4);
+  --rg-primary: #2563EB;
+  --rg-accent: #38BDF8;
+  --rg-text: #F8FAFC;
+  --rg-text-muted: #94A3B8;
+  --rg-radius: 16px;
+}
+
+body {
+  background-color: var(--rg-bg);
+  color: var(--rg-text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+/* Research Hub Page Container */
+.research-container {
+  display: flex;
+  min-height: calc(100vh - 90px);
+  gap: 24px;
+  padding-top: 24px;
+  padding-bottom: 60px;
+}
+
+/* Left Sidebar Navigation */
+.research-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--rg-surface);
+  border: 1px solid var(--rg-border-glass);
+  border-radius: var(--rg-radius);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  align-self: flex-start;
+  position: sticky;
+  top: 100px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+.sidebar-title {
+  font-size: 0.8rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--rg-accent);
+}
+
+.sidebar-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--rg-border-glass);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+
+.sidebar-search-box input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--rg-text);
+  font-size: 0.875rem;
+  font-family: inherit;
+}
+
+.sidebar-nav-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 12px;
+  color: var(--rg-text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.sidebar-nav-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--rg-text);
+}
+
+.sidebar-nav-item.active {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.2) 0%, rgba(56, 189, 248, 0.15) 100%);
+  border: 1px solid rgba(37, 99, 235, 0.35);
+  color: #ffffff;
+}
+
+.sidebar-count-badge {
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  color: inherit;
+}
+
+/* Main Research Content Area */
+.research-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.research-card {
+  background: var(--rg-surface);
+  border: 1px solid var(--rg-border-glass);
+  border-radius: var(--rg-radius);
+  padding: 28px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(12px);
+}
+
+.research-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.research-title-group {
+  flex: 1;
+}
+
+.research-title {
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--rg-text);
+  margin-bottom: 6px;
+}
+
+.research-subtitle {
+  color: var(--rg-text-muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+/* Tag Pills */
+.tag-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  background: rgba(37, 99, 235, 0.15);
+  border: 1px solid rgba(37, 99, 235, 0.3);
+  color: var(--rg-accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Grid Sections (Related Companies / People) */
+.section-heading {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--rg-text);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.related-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.item-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--rg-border-glass);
+  border-radius: 14px;
+  padding: 16px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+
+.item-card:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--rg-border-active);
+  transform: translateY(-2px);
+}
+
+.item-card-title {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--rg-text);
+  margin-bottom: 4px;
+}
+
+.item-card-sub {
+  font-size: 0.825rem;
+  color: var(--rg-text-muted);
+  line-height: 1.4;
+}
+
+/* Markdown Notes Viewer & Editor */
+.markdown-wrapper {
+  background: rgba(4, 8, 22, 0.6);
+  border: 1px solid var(--rg-border-glass);
+  border-radius: 14px;
+  padding: 24px;
+  margin-top: 16px;
+}
+
+.markdown-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rg-border-glass);
+}
+
+.tab-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.tab-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--rg-text-muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.tab-btn.active {
+  background: var(--rg-primary);
+  color: #ffffff;
+}
+
+.editor-textarea {
+  width: 100%;
+  min-height: 200px;
+  background: rgba(17, 24, 39, 0.9);
+  border: 1px solid var(--rg-border-glass);
+  border-radius: 12px;
+  padding: 16px;
+  color: var(--rg-text);
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 0.925rem;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.editor-textarea:focus {
+  border-color: var(--rg-primary);
+  box-shadow: 0 0 12px rgba(37, 99, 235, 0.3);
+}
+
+/* Rendered Markdown Styling */
+.markdown-rendered h1,
+.markdown-rendered h2,
+.markdown-rendered h3 {
+  color: var(--rg-text);
+  font-weight: 700;
+  margin-top: 20px;
+  margin-bottom: 10px;
+}
+
+.markdown-rendered h1 { font-size: 1.5rem; border-bottom: 1px solid var(--rg-border-glass); padding-bottom: 8px; }
+.markdown-rendered h2 { font-size: 1.25rem; }
+.markdown-rendered h3 { font-size: 1.1rem; }
+
+.markdown-rendered p {
+  color: #cbd5e1;
+  font-size: 0.95rem;
+  line-height: 1.65;
+  margin-bottom: 14px;
+}
+
+.markdown-rendered ul,
+.markdown-rendered ol {
+  color: #cbd5e1;
+  padding-left: 24px;
+  margin-bottom: 14px;
+}
+
+.markdown-rendered li {
+  margin-bottom: 6px;
+}
+
+.markdown-rendered pre {
+  background: #040816;
+  border: 1px solid var(--rg-border-glass);
+  border-radius: 10px;
+  padding: 14px;
+  overflow-x: auto;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 0.875rem;
+  color: #38bdf8;
+  margin-bottom: 16px;
+}
+
+.markdown-rendered code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.875rem;
+  color: var(--rg-accent);
+}
+
+.markdown-rendered a {
+  color: var(--rg-accent);
+  text-decoration: underline;
+}
+
+/* Warm Path Box */
+.warm-path-box {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.12) 0%, rgba(79, 70, 229, 0.12) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 14px;
+  padding: 20px;
+  margin-top: 16px;
+}
+
+/* Save status indicator */
+.save-status {
+  font-size: 0.8rem;
+  color: #10b981;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Responsive Breakpoints */
+@media (max-width: 900px) {
+  .research-container {
+    flex-direction: column;
+  }
+  .research-sidebar {
+    width: 100%;
+    position: static;
+  }
+}

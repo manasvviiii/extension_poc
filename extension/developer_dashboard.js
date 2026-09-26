@@ -252,9 +252,11 @@
     let invalidUrlCount = 0;
 
     const analyzedConnections = connections.map((c, idx) => {
-      const name = (c.name || "").trim();
-      const headline = (c.headline || c.occupation || "").trim();
-      const company = (c.company || c.experience_company || parseCompanyFromHeadline(headline) || "").trim();
+      const resolved = resolveCompanyAndRole(c);
+      const name = resolved.cleanName;
+      const headline = resolved.cleanHeadline;
+      const company = resolved.company !== "—" ? resolved.company : "";
+      const roleType = resolved.roleType;
       const profileUrl = (c.profile_url || "").trim();
 
       if (company) companySet.add(company.toLowerCase());
@@ -264,8 +266,8 @@
       const isValidUrl = isValidProfileUrl(profileUrl);
       const isDuplicate = duplicateKeys.has(idx);
 
-      const hasCompany = !!company;
-      const hasHeadline = !!headline;
+      const hasCompany = !!company && company !== "—";
+      const hasHeadline = !!headline && headline !== "—";
       const isComplete = !!name && hasHeadline && hasCompany && isValidUrl;
 
       if (isComplete) completeCount++;
@@ -284,7 +286,10 @@
       return {
         ...c,
         rawIndex: idx,
-        parsedCompany: company,
+        name,
+        headline,
+        parsedCompany: resolved.company,
+        roleType,
         isValidUrl,
         isDuplicate,
         isComplete,
@@ -308,10 +313,150 @@
     };
   }
 
+  // Company Normalization & Parsing Engine (Task 9.3)
+  function normalizeCompany(companyStr) {
+    if (!companyStr) return null;
+    let str = String(companyStr).trim();
+    if (!str || str === "—" || str === "N/A" || str.toLowerCase() === "null" || str.toLowerCase() === "undefined") return null;
+
+    const upper = str.toUpperCase();
+    if (upper === "GAT" || upper.includes("GLOBAL ACADEMY OF TECH")) {
+      return "Global Academy of Technology";
+    }
+    if (upper === "HPE" || upper.includes("HEWLETT PACKARD")) {
+      return "Hewlett Packard Enterprise";
+    }
+    if (upper === "MSFT" || upper.includes("MICROSOFT CORP")) {
+      return "Microsoft";
+    }
+    if (upper === "SISA" || upper.includes("SISA INFORMATION")) {
+      return "SISA";
+    }
+    return str;
+  }
+
+  function extractCompanyFromText(text) {
+    if (!text) return null;
+    const str = String(text);
+
+    if (/Global Academy of Technology|\bGAT\b/i.test(str)) {
+      return "Global Academy of Technology";
+    }
+    if (/Hewlett Packard Enterprise|\bHPE\b/i.test(str)) {
+      return "Hewlett Packard Enterprise";
+    }
+    if (/Microsoft|\bMSFT\b/i.test(str)) {
+      return "Microsoft";
+    }
+    if (/\bSISA\b/i.test(str)) {
+      return "SISA";
+    }
+
+    const match = str.match(/(?:at|@|\||,)\s*([A-Za-z0-9\s&]{3,40})/i);
+    if (match) {
+      const candidate = match[1].trim();
+      if (!/student|professor|faculty|dean|engineer|developer|manager|bangalore/i.test(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  function isPersonName(text, personName) {
+    if (!text || !personName) return false;
+    const norm1 = (text || "").toLowerCase().replace(/[^\w]/g, "");
+    const norm2 = (personName || "").toLowerCase().replace(/[^\w]/g, "");
+    return norm1 === norm2 || (norm1.length > 3 && norm2.includes(norm1));
+  }
+
+  function resolveCompanyAndRole(c) {
+    let rawName = (c.name || "").trim();
+    let rawHeadline = (c.headline || c.occupation || "").trim();
+
+    // Swap detection if name contains job title keywords while headline looks like a person name
+    const titleRegex = /\b(Dean|Associate Dean|Professor|Assistant Professor|HOD|Lecturer|Placement Officer|Student|Engineer|Developer|Manager|Analyst)\b/i;
+    if (titleRegex.test(rawName) && !titleRegex.test(rawHeadline) && rawHeadline.length > 0) {
+      const tmp = rawName;
+      rawName = rawHeadline;
+      rawHeadline = tmp;
+    }
+
+    // Resolution Priority:
+    // current_company ?? company ?? organization ?? experience.current_company ?? parsed_company ?? extractCompany(headline) ?? extractCompany(education) ?? "—"
+    let candidate = 
+      c.current_company ||
+      c.company ||
+      c.organization ||
+      (c.experience && (c.experience.current_company || c.experience.company)) ||
+      c.parsed_company ||
+      extractCompanyFromText(rawHeadline) ||
+      extractCompanyFromText(c.education) ||
+      null;
+
+    // Never use person's name as company!
+    if (candidate && rawName && isPersonName(candidate, rawName)) {
+      candidate = extractCompanyFromText(rawHeadline) || extractCompanyFromText(c.education) || null;
+    }
+
+    let normalizedCompany = normalizeCompany(candidate);
+
+    // Faculty Parser
+    const facultyRegex = /\b(Dean|Associate Dean|Professor|Assistant Professor|HOD|Lecturer|Placement Officer)\b/i;
+    const isFaculty = facultyRegex.test(rawHeadline) || facultyRegex.test(rawName);
+
+    // Student Parser
+    const studentRegex = /\b(Student|Undergraduate|Pursuing|Intern|B\.E\.|BTech|MTech|AIML Student)\b/i;
+    const isStudent = studentRegex.test(rawHeadline) || studentRegex.test(rawName);
+
+    let roleType = "Professional";
+
+    if (isFaculty) {
+      roleType = "Faculty";
+      if (/\b(Global Academy of Technology|GAT|Bangalore|Placements)\b/i.test(rawHeadline) || !normalizedCompany) {
+        if (!normalizedCompany || normalizedCompany === "—" || /Bangalore|Placements/i.test(normalizedCompany)) {
+          normalizedCompany = "Global Academy of Technology";
+        }
+      }
+    } else if (isStudent) {
+      roleType = "Student";
+      if (/\b(Global Academy of Technology|GAT)\b/i.test(rawHeadline) || !normalizedCompany) {
+        if (!normalizedCompany || normalizedCompany === "—") {
+          normalizedCompany = "Global Academy of Technology";
+        }
+      }
+    } else {
+      // Professional Parser check
+      if (/\b(HPE|Hewlett Packard)\b/i.test(rawHeadline)) {
+        normalizedCompany = "Hewlett Packard Enterprise";
+      } else if (/\b(MSFT|Microsoft)\b/i.test(rawHeadline)) {
+        normalizedCompany = "Microsoft";
+      } else if (/\bSISA\b/i.test(rawHeadline)) {
+        normalizedCompany = "SISA";
+      }
+    }
+
+    if (!normalizedCompany) {
+      normalizedCompany = "—";
+    } else {
+      normalizedCompany = normalizeCompany(normalizedCompany) || normalizedCompany;
+    }
+
+    let cleanHeadline = rawHeadline;
+    if (roleType === "Faculty" && cleanHeadline.includes("Global Academy of Technology")) {
+      cleanHeadline = cleanHeadline.replace(/Global Academy of Technology.*$/i, "").trim();
+      if (!cleanHeadline) cleanHeadline = rawHeadline;
+    }
+
+    return {
+      cleanName: rawName || "Unknown Name",
+      cleanHeadline: cleanHeadline || rawHeadline || "—",
+      company: normalizedCompany,
+      roleType
+    };
+  }
+
   function parseCompanyFromHeadline(headline) {
-    if (!headline) return null;
-    const match = headline.match(/\bat\s+([^,•|]+)/i) || headline.match(/[@|•]\s*([^,•|]+)/);
-    return match ? match[1].trim() : null;
+    return extractCompanyFromText(headline);
   }
 
   // 3. Render Dashboard UI
@@ -427,12 +572,24 @@
       return `
         <tr data-index="${item.rawIndex}">
           <td class="record-name">${highlightedName}</td>
-          <td>${highlightedCompany}</td>
+          <td class="company-cell">
+            <div class="company-name-text">${highlightedCompany}</div>
+            <div class="company-role-text">${escapeHtml(item.roleType || "Professional")}</div>
+          </td>
           <td>${highlightedHeadline}</td>
           <td><span class="status-badge" style="background:#f1f5f9; color:#475569;">${escapeHtml(item.degree || "1st")}</span></td>
           <td>${statusBadge}</td>
           <td>
-            ${item.profile_url ? `<a class="btn-profile-link" href="${escapeHtml(item.profile_url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">Profile ↗</a>` : "—"}
+            ${item.profile_url ? `
+              <a class="btn-profile-chip" href="${escapeHtml(item.profile_url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">
+                <span>View</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                  <polyline points="15 3 21 3 21 9"/>
+                  <line x1="10" y1="14" x2="21" y2="3"/>
+                </svg>
+              </a>
+            ` : "—"}
           </td>
         </tr>
       `;

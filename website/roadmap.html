@@ -11,15 +11,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    .roadmap-section {
-      padding: 60px 0 100px;
-    }
-    .roadmap-timeline {
-      position: relative;
-      max-width: 860px;
-      margin: 0 auto;
-      padding: 40px 0;
-    }
+    .roadmap-section { padding: 60px 0 100px; }
+    .roadmap-timeline { position: relative; max-width: 860px; margin: 0 auto; padding: 40px 0; }
     .roadmap-timeline::before {
       content: '';
       position: absolute;
@@ -30,11 +23,7 @@
       background: linear-gradient(180deg, var(--primary-blue) 0%, var(--accent-violet) 50%, rgba(255, 255, 255, 0.1) 100%);
       box-shadow: 0 0 15px var(--primary-blue);
     }
-    .roadmap-item {
-      position: relative;
-      padding-left: 72px;
-      margin-bottom: 48px;
-    }
+    .roadmap-item { position: relative; padding-left: 72px; margin-bottom: 48px; }
     .roadmap-node-badge {
       position: absolute;
       left: 13px;
@@ -48,79 +37,19 @@
       align-items: center;
       justify-content: center;
     }
-    .roadmap-item.implemented .roadmap-node-badge {
-      border-color: var(--primary-blue);
-      background: var(--primary-blue);
-      box-shadow: 0 0 16px var(--primary-blue);
-    }
-    .roadmap-item.current .roadmap-node-badge {
-      border-color: var(--accent-violet);
-      background: var(--accent-violet);
-      box-shadow: 0 0 16px var(--accent-violet);
-      animation: pulse 2s infinite;
-    }
-    .roadmap-item.upcoming .roadmap-node-badge {
-      border-color: var(--text-dim);
-      background: rgba(255, 255, 255, 0.05);
-    }
-    .roadmap-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border-glass);
-      border-radius: var(--radius-lg);
-      padding: 32px;
-      transition: all var(--transition-normal);
-      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
-    }
-    .roadmap-card:hover {
-      border-color: var(--border-glass-active);
-      transform: translateY(-4px);
-    }
-    .roadmap-status-tag {
-      font-size: 0.8rem;
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      margin-bottom: 12px;
-      display: inline-block;
-      padding: 4px 12px;
-      border-radius: var(--radius-full);
-    }
-    .tag-implemented {
-      background: rgba(56, 189, 248, 0.12);
-      color: var(--primary-blue);
-      border: 1px solid rgba(56, 189, 248, 0.3);
-    }
-    .tag-current {
-      background: rgba(139, 92, 246, 0.15);
-      color: var(--accent-violet);
-      border: 1px solid rgba(139, 92, 246, 0.3);
-    }
-    .tag-upcoming {
-      background: rgba(255, 255, 255, 0.05);
-      color: var(--text-dim);
-      border: 1px solid var(--border-glass);
-    }
-    .roadmap-card h3 {
-      font-size: 1.5rem;
-      margin-bottom: 12px;
-    }
-    .roadmap-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      margin-top: 16px;
-    }
-    .roadmap-list-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 0.95rem;
-      color: var(--text-main);
-    }
-    .roadmap-list-item.checked svg {
-      stroke: var(--primary-blue);
-    }
+    .roadmap-item.implemented .roadmap-node-badge { border-color: var(--primary-blue); background: var(--primary-blue); box-shadow: 0 0 16px var(--primary-blue); }
+    .roadmap-item.current .roadmap-node-badge { border-color: var(--accent-violet); background: var(--accent-violet); box-shadow: 0 0 16px var(--accent-violet); animation: pulse 2s infinite; }
+    .roadmap-item.upcoming .roadmap-node-badge { border-color: var(--text-dim); background: rgba(255, 255, 255, 0.05); }
+    .roadmap-card { background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: var(--radius-lg); padding: 32px; transition: all var(--transition-normal); box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4); }
+    .roadmap-card:hover { border-color: var(--border-glass-active); transform: translateY(-4px); }
+    .roadmap-status-tag { font-size: 0.8rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; display: inline-block; padding: 4px 12px; border-radius: var(--radius-full); }
+    .tag-implemented { background: rgba(56, 189, 248, 0.12); color: var(--primary-blue); border: 1px solid rgba(56, 189, 248, 0.3); }
+    .tag-current { background: rgba(139, 92, 246, 0.15); color: var(--accent-violet); border: 1px solid rgba(139, 92, 246, 0.3); }
+    .tag-upcoming { background: rgba(255, 255, 255, 0.05); color: var(--text-dim); border: 1px solid var(--border-glass); }
+    .roadmap-card h3 { font-size: 1.5rem; margin-bottom: 12px; }
+    .roadmap-list { list-style: none; display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+    .roadmap-list-item { display: flex; align-items: center; gap: 10px; font-size: 0.95rem; color: var(--text-main); }
+    .roadmap-list-item.checked svg { stroke: var(--primary-blue); }
   </style>
 </head>
 <body>
@@ -148,10 +77,10 @@
       </ul>
 
       <div style="display: flex; align-items: center; gap: 16px;">
-        <a href="../extension/popup.html" class="nav-cta-btn">
+        <button class="nav-cta-btn open-install-modal">
           <span>Get Extension</span>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-        </a>
+        </button>
         <button class="mobile-toggle" aria-label="Toggle Navigation Menu">☰</button>
       </div>
     </div>

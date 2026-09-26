@@ -578,12 +578,9 @@ async function runTests() {
     assert.strictEqual(status.status.is_partial, false);
   });
 
-  // Test 22: Accepted rendered dataset 205/206 terminates loop in completed state
-  await test("22. Accepted rendered dataset 205/206 terminates loop in completed state", async () => {
-    const env = createMockPaginatedEnvironment({ totalRecords: 205, pageSize: 50, includeDuplicates: false });
-    env.sandbox.document.documentElement.innerText = "Connections (206)";
-    env.sandbox.document.body.innerText = "Connections (206)";
-    env.sandbox.window.acquisitionSession.expectedTotal = 206;
+  // Test 23: Scalable Acquisition to 1,500+ connections without stopping at 200 ceiling
+  await test("23. Scalable acquisition acquires 1,547 connections without stopping at 200 ceiling", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 1547, pageSize: 100, includeDuplicates: false });
     await new Promise(r => setTimeout(r, 150));
     if (env.sandbox.window.acquisitionSession.activeLoopPromise) {
       await env.sandbox.window.acquisitionSession.activeLoopPromise;
@@ -591,8 +588,135 @@ async function runTests() {
 
     const status = await env.sendMessage({ action: "getAcquisitionStatus" });
     assert.strictEqual(status.status.state, "completed");
-    assert.strictEqual(status.status.completion_status, "complete_rendered_dataset");
-    assert.strictEqual(status.status.is_partial, false);
+    assert.strictEqual(status.status.expected_total, 1547);
+    assert.strictEqual(status.status.collected_count, 1547);
+    assert.strictEqual(status.status.progress_percent, 100);
+  });
+
+  // Test 24: Active LinkedIn Filter detection from DOM
+  await test("24. Active LinkedIn Filter detected and reported in session status", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 418, pageSize: 50, includeDuplicates: false });
+    const mockPill = {
+      tagName: "BUTTON",
+      className: "search-reusables__filter-pill-button",
+      innerText: "Company: Goldman Sachs",
+      textContent: "Company: Goldman Sachs"
+    };
+    env.sandbox.document.querySelectorAll = (sel) => {
+      if (sel.includes("filter-pill")) return [mockPill];
+      return [];
+    };
+
+    const status = env.sandbox.window.acquisitionSession.getStatus();
+    assert.ok(status.active_filter, "Active filter should be present");
+    assert.strictEqual(status.active_filter.label, "Goldman Sachs");
+  });
+
+  // Test 25: Background Persistent Sync State Machine (SYNC_TO_BACKEND)
+  await test("25. SYNC_TO_BACKEND handles persistent sync state machine transition to synced", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 206, pageSize: 50, includeDuplicates: false });
+    await new Promise(r => setTimeout(r, 150));
+    if (env.sandbox.window.acquisitionSession.activeLoopPromise) {
+      await env.sandbox.window.acquisitionSession.activeLoopPromise;
+    }
+
+    const syncRes = await env.sendMessage({ action: "SYNC_TO_BACKEND" });
+    assert.strictEqual(syncRes.success, true);
+    assert.strictEqual(syncRes.status.sync_status, "synced");
+    assert.ok(syncRes.status.last_synced_at, "Last synced timestamp recorded");
+  });
+
+  // Test 26: Progressive Model Schema fields persisted in storage
+  await test("26. Progressive Model Schema fields (totalConnections, extractedConnections, remainingConnections, progressPercent) persisted", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 1507, pageSize: 100, includeDuplicates: false });
+    await new Promise(r => setTimeout(r, 100));
+
+    const status = env.sandbox.window.acquisitionSession.getStatus();
+    assert.strictEqual(status.totalConnections, 1507, "totalConnections field must be 1507");
+    assert.ok(status.extractedConnections > 0, "extractedConnections must be > 0");
+    assert.strictEqual(status.remainingConnections, 1507 - status.extractedConnections, "remainingConnections calculation");
+    assert.strictEqual(status.progressPercent, Math.round((status.extractedConnections / 1507) * 100), "progressPercent calculation");
+
+    const sessionInStorage = env.storageMap.acquisition_session;
+    assert.ok(sessionInStorage, "Session must exist in storage");
+    assert.strictEqual(sessionInStorage.totalConnections, 1507, "totalConnections in storage");
+    assert.strictEqual(sessionInStorage.extractedConnections, status.extractedConnections, "extractedConnections in storage");
+  });
+
+  // Test 27: 8-30s delay bounds constants verified
+  await test("27. Human pacing delay bounds configured to 8-30 seconds", async () => {
+    assert.ok(contentJsSource.includes("const ACQUISITION_MIN_DELAY_MS = 8000;"), "ACQUISITION_MIN_DELAY_MS must be 8000");
+    assert.ok(contentJsSource.includes("const ACQUISITION_MAX_DELAY_MS = 30000;"), "ACQUISITION_MAX_DELAY_MS must be 30000");
+  });
+
+  // Test 28: Dynamic Connection Total Parsing
+  await test("28. Dynamic connection total correctly parsed from DOM text patterns", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 5234, pageSize: 50, includeDuplicates: false });
+    env.sandbox.document.body.innerText = "Connections (5,234)";
+    const extracted = env.sandbox.window.extractTotalConnectionsFromDom();
+    assert.strictEqual(extracted, 5234, "DOM text 'Connections (5,234)' parsed to 5234");
+  });
+
+  // Test 29: 100 randomized delays stay within 8-30s range
+  await test("29. 100 randomized delays stay strictly within 8-30 seconds bounds", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 100, pageSize: 50 });
+    delete env.sandbox.window.TEST_ACQUISITION_DELAY_MS;
+
+    for (let i = 0; i < 100; i++) {
+      const delay = env.sandbox.window.getRandomAcquisitionDelayMs();
+      assert.ok(delay >= 8000 && delay <= 30000, `Delay ${delay}ms must be between 8000 and 30000 ms`);
+    }
+  });
+
+  // Test 30: Delay differs between consecutive batches
+  await test("30. Delay differs between consecutive batches (new randomness per batch)", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 100, pageSize: 50 });
+    delete env.sandbox.window.TEST_ACQUISITION_DELAY_MS;
+
+    const samples = [];
+    for (let i = 0; i < 10; i++) {
+      samples.push(env.sandbox.window.getRandomAcquisitionDelayMs());
+    }
+    const uniqueSamples = new Set(samples);
+    assert.ok(uniqueSamples.size > 1, "Delays between consecutive batches must vary randomly");
+  });
+
+  // Test 31: Overdue timestamp triggers immediate batch extraction
+  await test("31. Minimized tab / overdue timestamp (nextBatchAt <= Date.now()) triggers immediate extraction", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 200, pageSize: 50 });
+    env.sandbox.window.acquisitionSession.state = "waiting";
+    env.sandbox.window.acquisitionSession.nextBatchAt = Date.now() - 5000; // Overdue by 5 seconds
+
+    const status = env.sandbox.window.acquisitionSession.getStatus();
+    assert.strictEqual(status.countdown_seconds, 0, "Countdown for overdue timestamp evaluates to 0s");
+  });
+
+  // Test 32: Countdown recalculates from timestamps
+  await test("32. Countdown recalculates dynamically from absolute timestamps (nextBatchAt - Date.now())", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 200, pageSize: 50 });
+    const futureTime = Date.now() + 21000;
+    env.sandbox.window.acquisitionSession.state = "waiting";
+    env.sandbox.window.acquisitionSession.nextBatchAt = futureTime;
+
+    const status = env.sandbox.window.acquisitionSession.getStatus();
+    assert.ok(status.countdown_seconds >= 20 && status.countdown_seconds <= 21, "Derived countdown equals ~21s");
+  });
+
+  // Test 33: Popup closure does not affect background scheduler
+  await test("33. Popup closure does not affect background nextBatchAt persistence", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 200, pageSize: 50 });
+    await new Promise(r => setTimeout(r, 100));
+
+    const futureTime = Date.now() + 15000;
+    await env.sendMessage({
+      action: "UPDATE_SESSION",
+      state: "waiting",
+      nextBatchAt: futureTime,
+      nextSyncDelay: 15000
+    });
+
+    const sessionInStorage = env.storageMap.acquisition_session;
+    assert.strictEqual(sessionInStorage.nextBatchAt, futureTime, "nextBatchAt is preserved in background storage when popup is closed");
   });
 
   console.log(`\nResults: ${passed}/${total} tests passed.\n`);

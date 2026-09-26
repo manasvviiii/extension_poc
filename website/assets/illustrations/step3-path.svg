@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="pGrad1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="50%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+    <filter id="pathGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="5" flood-color="#38bdf8" flood-opacity="0.8"/>
+    </filter>
+  </defs>
+
+  <!-- Multi-Hop Path -->
+  <path d="M40,80 Q90,30 140,110 T200,80" stroke="url(#pGrad1)" stroke-width="3.5" fill="none" filter="url(#pathGlow)"/>
+
+  <circle cx="40" cy="80" r="10" fill="#0b1224" stroke="#3b82f6" stroke-width="2.5"/>
+  <circle cx="40" cy="80" r="4" fill="#3b82f6"/>
+
+  <circle cx="120" cy="70" r="10" fill="#0b1224" stroke="#8b5cf6" stroke-width="2.5"/>
+  <circle cx="120" cy="70" r="4" fill="#8b5cf6"/>
+
+  <circle cx="200" cy="80" r="12" fill="#0b1224" stroke="#38bdf8" stroke-width="3" filter="url(#pathGlow)"/>
+  <circle cx="200" cy="80" r="5" fill="#38bdf8"/>
+</svg>

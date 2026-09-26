@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 540" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="ribbonBodyGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="30%" stop-color="#8b5cf6" />
+      <stop offset="65%" stop-color="#ec4899" />
+      <stop offset="100%" stop-color="#3b82f6" />
+    </linearGradient>
+
+    <linearGradient id="ribbonDepthGrad2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ec4899" />
+      <stop offset="40%" stop-color="#7c3aed" />
+      <stop offset="80%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#1e1b4b" />
+    </linearGradient>
+
+    <linearGradient id="specularStroke2" x1="0%" y1="30%" x2="100%" y2="70%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95" />
+      <stop offset="40%" stop-color="#38bdf8" stop-opacity="0.8" />
+      <stop offset="80%" stop-color="#f43f5e" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.9" />
+    </linearGradient>
+
+    <filter id="ribbon3dShadow2" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#8b5cf6" flood-opacity="0.45" />
+      <feDropShadow dx="0" dy="4" stdDeviation="10" flood-color="#38bdf8" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <g filter="url(#ribbon3dShadow2)">
+    <path d="M120,380 C40,240 180,80 340,140 C500,200 660,100 680,260 C700,420 520,480 380,440 C240,400 200,520 120,380 Z" fill="url(#ribbonDepthGrad2)" opacity="0.9" />
+    <path d="M160,340 C80,200 240,60 400,110 C560,160 640,280 580,400 C520,520 340,460 260,380 C180,300 240,480 160,340 Z" fill="url(#ribbonBodyGrad2)" />
+    <path d="M220,300 C160,180 300,100 440,150 C580,200 600,340 520,420 C440,500 320,400 280,340 Z" fill="url(#ribbonDepthGrad2)" opacity="0.65" />
+
+    <!-- Specular Highlight Curve Folds -->
+    <path d="M165,335 C88,205 242,65 398,113 C554,161 632,278 575,395" stroke="url(#specularStroke2)" stroke-width="4.5" stroke-linecap="round" fill="none" opacity="0.95" />
+    <path d="M225,295 C168,185 302,105 438,153 C572,201 592,335 515,412" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" fill="none" opacity="0.75" />
+  </g>
+</svg>

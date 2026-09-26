@@ -1,3 +1,5 @@
+const DEV_MODE = false;
+
 let connectionsState = null;
 let acquisitionState = null;
 let targetSearchState = null;
@@ -24,25 +26,51 @@ const pathResultsEl =
    OWNER IDENTITY
 ========================================================= */
 
+/**
+ * Read the canonical owner identity.
+ * Priority: warmgraph_owner.ownerId > ownerId (only if not a random warmgraph_ UUID)
+ * Never generates a new ID — popup.js is read-only for identity.
+ */
 function getStoredOwnerId() {
   return new Promise((resolve) => {
-
     chrome.storage.local.get(
-      ["ownerId", "externalProfileUrl"],
+      ["warmgraph_owner", "ownerId", "externalProfileUrl"],
       (result) => {
+        // Priority 1: canonical warmgraph_owner record
+        const owner = result.warmgraph_owner;
+        if (owner?.ownerId) {
+          resolve({
+            ownerId: owner.ownerId,
+            externalProfileUrl: owner.profileUrl || result.externalProfileUrl || null,
+            name: owner.name || null
+          });
+          return;
+        }
 
-        resolve({
-          ownerId:
-            result.ownerId || null,
+        // Priority 2: legacy ownerId (only if not a random warmgraph_ UUID)
+        const legacyId = result.ownerId;
+        if (legacyId && !legacyId.startsWith("warmgraph_")) {
+          resolve({
+            ownerId: legacyId,
+            externalProfileUrl: result.externalProfileUrl || null,
+            name: null
+          });
+          return;
+        }
 
-          externalProfileUrl:
-            result.externalProfileUrl || null
-        });
-
+        // Not yet identified — return null so callers show "Identity Pending"
+        resolve({ ownerId: null, externalProfileUrl: result.externalProfileUrl || null, name: null });
       }
     );
-
   });
+}
+
+function getInitials(name) {
+  if (!name || typeof name !== "string") return "WG";
+  const clean = name.replace(/^https?:\/\/[^/]+\/in\//i, "").replace(/-/g, " ").trim();
+  const parts = clean.split(/\s+/);
+  if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 function escapeHtml(str) {
@@ -55,39 +83,152 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
+function initTabNavigation() {
+  const tabs = [
+    { btn: "tabBtnOverview", panel: "tabPanelOverview" },
+    { btn: "tabBtnSearch", panel: "tabPanelSearch" },
+    { btn: "tabBtnWarmPath", panel: "tabPanelWarmPath" },
+    { btn: "tabBtnGraph", panel: "tabPanelGraph" }
+  ];
+
+  tabs.forEach(tab => {
+    const btnEl = document.getElementById(tab.btn);
+    const panelEl = document.getElementById(tab.panel);
+    if (btnEl && panelEl) {
+      btnEl.addEventListener("click", () => {
+        tabs.forEach(t => {
+          document.getElementById(t.btn)?.classList.remove("active");
+          document.getElementById(t.panel)?.classList.remove("active");
+        });
+        btnEl.classList.add("active");
+        panelEl.classList.add("active");
+      });
+    }
+  });
+}
+
+function initCommandSearch() {
+  const commandInput = document.getElementById("commandSearchInput");
+  const companyInput = document.getElementById("company");
+  const roleInput = document.getElementById("targetRole");
+  const searchBtn = document.getElementById("searchTarget");
+
+  if (!commandInput) return;
+
+  commandInput.addEventListener("input", (e) => {
+    const val = e.target.value.trim();
+    if (companyInput) companyInput.value = val;
+    if (roleInput) roleInput.value = val;
+
+    if (val.length > 2 && searchBtn) {
+      searchBtn.click();
+    }
+  });
+
+  commandInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && searchBtn) {
+      searchBtn.click();
+    }
+  });
+}
+
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      initTabNavigation();
+      initCommandSearch();
+    });
+  } else {
+    initTabNavigation();
+    initCommandSearch();
+  }
+}
+
 
 
 /* =========================================================
    SHOW DETECTED IDENTITY
 ========================================================= */
 
+/**
+ * Render identity banner with the detected owner.
+ */
+function renderIdentityReady(ownerId, profileUrl) {
+  const identityEl = document.getElementById("identity");
+  if (!identityEl) return;
+  identityEl.className = "detected";
+  identityEl.textContent = `Identity Ready ✓${profileUrl ? " (" + profileUrl + ")" : ""}`;
+}
+
+function renderIdentityPending() {
+  const identityEl = document.getElementById("identity");
+  if (!identityEl) return;
+  identityEl.className = "pending";
+  identityEl.textContent = "Identity Pending — Open any LinkedIn page to connect owner ID.";
+}
+
 (async () => {
-
-  const identityEl =
-    document.getElementById("identity");
-
-  const identity =
-    await getStoredOwnerId();
-
+  // Step 1: check chrome.storage.local for warmgraph_owner (canonical key)
+  const identity = await getStoredOwnerId();
 
   if (identity.ownerId) {
-
-    identityEl.className =
-      "detected";
-
-    identityEl.textContent =
-      `Identity Ready ✓ ${identity.externalProfileUrl ? "(" + identity.externalProfileUrl + ")" : ""}`;
-
-  } else {
-
-    identityEl.className =
-      "pending";
-
-    identityEl.textContent =
-      "Identity Pending — Open any LinkedIn page to connect owner ID.";
-
+    renderIdentityReady(identity.ownerId, identity.externalProfileUrl);
+    return;
   }
 
+  // Step 2: storage empty — show "detecting..." and query all LinkedIn tabs
+  const identityEl = document.getElementById("identity");
+  if (identityEl) {
+    identityEl.className = "pending";
+    identityEl.textContent = "Detecting identity…";
+  }
+
+  try {
+    if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.query) {
+      // Find all LinkedIn tabs (any page — Feed, Connections, Profile, Search)
+      const tabs = await new Promise(resolve =>
+        chrome.tabs.query({ url: "*://*.linkedin.com/*" }, resolve)
+      );
+
+      if (!tabs || tabs.length === 0) {
+        // No LinkedIn tab open at all
+        renderIdentityPending();
+        return;
+      }
+
+      // Ask each tab for identity — first successful response wins
+      let resolved = false;
+      const tryTab = (tab) => new Promise(resolve => {
+        try {
+          chrome.tabs.sendMessage(tab.id, { action: "GET_OWNER_IDENTITY" }, (res) => {
+            if (chrome.runtime.lastError) return resolve(null);
+            resolve(res);
+          });
+        } catch (_) {
+          resolve(null);
+        }
+      });
+
+      const results = await Promise.all(tabs.map(tryTab));
+      for (const res of results) {
+        if (res && res.success && res.ownerId) {
+          resolved = true;
+          renderIdentityReady(res.ownerId, res.profileUrl);
+          break;
+        }
+      }
+
+      if (!resolved) {
+        // Tabs exist but content script hasn't detected identity yet
+        // (e.g., freshly opened tab, nav not rendered)
+        renderIdentityPending();
+      }
+    } else {
+      renderIdentityPending();
+    }
+  } catch (_) {
+    renderIdentityPending();
+  }
 })();
 
 
@@ -171,14 +312,15 @@ function renderExtractionPreview(response, filterQuery) {
     `;
 
     connections.forEach((person) => {
+      const pName = person.name || "Unknown person";
       html += `
         <div class="record">
-          <div class="record-name">
-            ${escapeHtml(person.name || "Unknown person")}
-          </div>
-
-          <div class="record-headline">
-            ${escapeHtml(person.headline || person.occupation || "No headline available")}
+          <div class="record-header">
+            <div class="avatar-circle">${escapeHtml(getInitials(pName))}</div>
+            <div>
+              <div class="record-name">${escapeHtml(pName)}</div>
+              <div class="record-headline">${escapeHtml(person.headline || person.occupation || "No headline available")}</div>
+            </div>
           </div>
 
           <div class="record-meta">
@@ -305,9 +447,9 @@ function sendTabMessage(action, payload = {}) {
 function getHumanizedStateInfo(status) {
   if (!status) {
     return {
-      title: "Network Ready",
-      badgeText: "● Ready",
-      subtext: "Open your LinkedIn Connections page to build your network map.",
+      title: "Reading your network",
+      badgeText: "● Reading",
+      subtext: "WarmGraph is getting ready to discover your network.",
       isComplete: false,
       isSyncing: false,
       isSyncFailed: false
@@ -315,28 +457,62 @@ function getHumanizedStateInfo(status) {
   }
 
   const state = status.state || "idle";
+  const syncStatus = status.sync_status || status.syncStatus || "idle";
   const collected = status.collected_count !== undefined ? status.collected_count : (status.connections ? status.connections.length : 0);
   const expected = status.expected_total || status.reliable_dom_total || 0;
-  const syncStatus = status.sync_status || "idle";
+  const countdown = status.countdown_seconds || status.countdownSeconds || 0;
   const isError = state === "failed" || state === "error" || (status.error && status.error.length > 0);
 
   if (isError) {
     return {
-      title: "Something went wrong",
-      badgeText: "⚠️ Attention Required",
+      title: "Sync Failed",
+      badgeText: "⚠️ Sync Failed",
       subtext: status.error || status.status_message || "An unexpected issue occurred. Try reopening your LinkedIn Connections page.",
       isComplete: false,
       isSyncing: false,
+      isSyncFailed: true
+    };
+  }
+
+  if (syncStatus === "synced") {
+    return {
+      title: "Network Successfully Synced",
+      badgeText: "✓ Synced",
+      subtext: `${collected} connections imported\nRelationship graph ready`,
+      isComplete: true,
+      isSyncing: false,
       isSyncFailed: false
+    };
+  }
+
+  if (syncStatus === "syncing") {
+    return {
+      title: "Importing your network...",
+      badgeText: "● Syncing",
+      subtext: `Saving ${collected} connections to WarmGraph...`,
+      isComplete: false,
+      isSyncing: true,
+      isSyncFailed: false
+    };
+  }
+
+  if (syncStatus === "failed" || syncStatus === "sync_failed") {
+    return {
+      title: "Sync Failed",
+      badgeText: "⚠️ Sync Failed",
+      subtext: "We couldn't finish saving your network yet. Click Sync Network to try again.",
+      isComplete: false,
+      isSyncing: false,
+      isSyncFailed: true
     };
   }
 
   switch (state) {
     case "preparing":
       return {
-        title: "Preparing your network",
-        badgeText: "● Preparing",
-        subtext: "WarmGraph is getting things ready.",
+        title: "Reading your network",
+        badgeText: "● Reading",
+        subtext: "WarmGraph is reading your LinkedIn network page.",
         isComplete: false,
         isSyncing: false,
         isSyncFailed: false
@@ -344,10 +520,11 @@ function getHumanizedStateInfo(status) {
 
     case "acquiring":
     case "collecting":
+    case "resumed":
       return {
-        title: "Building your network",
-        badgeText: "● Building network",
-        subtext: `${collected > 0 ? collected + " connections discovered." : "Discovering connections."}\n\nYou can keep browsing — WarmGraph is working quietly in the background.`,
+        title: "Building your relationship graph",
+        badgeText: "● Building graph",
+        subtext: "Discovering your connections in the background.",
         isComplete: false,
         isSyncing: false,
         isSyncFailed: false
@@ -356,20 +533,32 @@ function getHumanizedStateInfo(status) {
     case "waiting":
     case "waiting_for_content":
       return {
-        title: "Loading more connections...",
-        badgeText: "● Waiting for content",
-        subtext: "WarmGraph is waiting for the page to finish loading.",
+        title: countdown > 0 ? `Next batch in ${countdown}s` : "Preparing next batch...",
+        badgeText: "⏳ Batch Countdown",
+        subtext: "You can continue browsing LinkedIn normally.",
         isComplete: false,
         isSyncing: false,
         isSyncFailed: false
       };
 
     case "settling":
+    case "verifying":
       return {
-        title: "Checking your network...",
-        badgeText: "● Verifying page",
-        subtext: "Making sure there are no more connections to add.",
+        title: "Checking remaining connections",
+        badgeText: "● Verifying",
+        subtext: "Checking if more connections remain.",
         isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+
+    case "completed":
+    case "resting":
+      return {
+        title: "You're all caught up ✨",
+        badgeText: "Resting",
+        subtext: "No new connections found. Your network is fully synced.",
+        isComplete: true,
         isSyncing: false,
         isSyncFailed: false
       };
@@ -378,107 +567,29 @@ function getHumanizedStateInfo(status) {
     case "interrupted":
       return {
         title: "We'll continue when you're back",
-        badgeText: "⏸ Saved",
-        subtext: "Your progress is saved. Return to your Connections page when you're ready.",
+        badgeText: "🟠 Paused",
+        subtext: "Return to Connections to continue syncing.",
         isComplete: false,
         isSyncing: false,
         isSyncFailed: false
       };
 
-    case "resumed":
-      return {
-        title: "Building your network",
-        badgeText: "● Resuming",
-        subtext: `Continuing from ${collected} connections. You can keep browsing freely.`,
-        isComplete: false,
-        isSyncing: false,
-        isSyncFailed: false
-      };
-
-    case "completed":
-      if (syncStatus === "syncing") {
+    case "idle":
+    default:
+      if (collected > 0 && (status.completion_status === "complete" || status.completionStatus === "complete" || state === "resting" || state === "completed")) {
         return {
-          title: "Saving your network...",
-          badgeText: "● Saving network",
-          subtext: `${collected} connections collected. Saving your network to WarmGraph...`,
-          isComplete: false,
-          isSyncing: true,
-          isSyncFailed: false
-        };
-      } else if (syncStatus === "synced") {
-        return {
-          title: "Your network is ready ✨",
-          badgeText: "✓ Up to date",
-          subtext: `${collected} connections are now available in WarmGraph. Ready to research people and companies.`,
+          title: "You're all caught up ✨",
+          badgeText: "Resting",
+          subtext: "No new connections found. Your network is fully synced.",
           isComplete: true,
           isSyncing: false,
           isSyncFailed: false
         };
-      } else if (syncStatus === "failed" || syncStatus === "sync_failed") {
-        return {
-          title: `${collected} connections collected`,
-          badgeText: "⚠️ Sync pending",
-          subtext: "We couldn't finish saving your network yet. We'll try again automatically.",
-          isComplete: false,
-          isSyncing: false,
-          isSyncFailed: true
-        };
-      } else if (syncStatus === "blocked") {
-        return {
-          title: `${collected} connections collected`,
-          badgeText: "⚠️ Sync pending",
-          subtext: "Complete dataset required before saving network data.",
-          isComplete: false,
-          isSyncing: false,
-          isSyncFailed: true
-        };
-      } else {
-        return {
-          title: "Saving your network...",
-          badgeText: "● Saving network",
-          subtext: `Preparing to save ${collected} connections to WarmGraph...`,
-          isComplete: false,
-          isSyncing: true,
-          isSyncFailed: false
-        };
-      }
-
-    case "idle":
-    default:
-      if (collected > 0) {
-        if (syncStatus === "synced") {
-          return {
-            title: "Your network is ready ✨",
-            badgeText: "✓ Network ready",
-            subtext: `${collected} connections catalogued in WarmGraph.`,
-            isComplete: true,
-            isSyncing: false,
-            isSyncFailed: false
-          };
-        } else if (syncStatus === "failed" || syncStatus === "sync_failed") {
-          return {
-            title: `${collected} connections collected`,
-            badgeText: "⚠️ Sync pending",
-            subtext: "Network collected locally. We'll try saving to WarmGraph automatically.",
-            isComplete: false,
-            isSyncing: false,
-            isSyncFailed: true
-          };
-        } else {
-          return {
-            title: `${collected} connections collected`,
-            badgeText: "● Network collected",
-            subtext: `${collected} connections saved in local session.`,
-            isComplete: false,
-            isSyncing: false,
-            isSyncFailed: false
-          };
-        }
       }
       return {
-        title: "Network Ready",
+        title: "Reading your network",
         badgeText: "● Ready",
-        subtext: "Open your LinkedIn Connections page to build your network map.",
+        subtext: "Open your LinkedIn Connections page to build your relationship graph.",
         isComplete: false,
         isSyncing: false,
         isSyncFailed: false
@@ -489,15 +600,52 @@ function getHumanizedStateInfo(status) {
 function updateAcquisitionDashboard(status) {
   if (!status) return;
 
-  const state = status.state;
-  const collected = status.collected_count !== undefined ? status.collected_count : (status.connections ? status.connections.length : 0);
-  const expected = status.expected_total || status.reliable_dom_total || 0;
-  const missing = Math.max(0, expected - collected);
+  // ── SSOT: popup.js is a PURE RENDERER ─────────────────────────────────
+  // Trust ALL values written by content.js to currentSession.
+  // NEVER recalculate actualProfiles or progressPercent here.
+  // ────────────────────────────────────────────────────────────────────────
+  const rawState = status.state || "idle";
+  const extracted = status.extractedConnections !== undefined
+    ? status.extractedConnections
+    : (status.collected_count !== undefined ? status.collected_count : 0);
+
+  // Trust actualProfiles from content.js — NEVER re-derive from extracted
+  const actual = status.actualProfiles !== undefined && status.actualProfiles > 0
+    ? status.actualProfiles
+    : (status.totalConnections || status.expected_total || 0);
+
+  const total = status.totalConnections !== undefined ? status.totalConnections : (status.expected_total || actual);
+
+  // Trust state directly from content.js — do NOT re-map completed→resting here
+  const state = rawState;
+  // Trust progressPercent from content.js; fallback-compute only if absent
+  const progressPercent = status.progressPercent !== undefined
+    ? status.progressPercent
+    : (actual > 0 ? (extracted >= actual ? 100 : Math.min(99, Math.floor((extracted / actual) * 100))) : (extracted > 0 ? 100 : 0));
+  const syncState = status.syncStatus || status.sync_status || "idle";
+  const lastSyncDate = status.lastSyncedAt || status.lastSyncDate || status.last_synced_at || "";
+  const countdown = status.countdownSeconds !== undefined ? status.countdownSeconds : (status.countdown_seconds || 0);
+  const activeFilter = status.active_filter || status.activeFilter;
+
+  const currentSession = {
+    sessionId: status.sessionId || null,
+    totalConnections: total,
+    actualProfiles: actual,
+    extractedConnections: extracted,
+    progressPercent: progressPercent,
+    syncStatus: syncState,
+    lastSyncDate: lastSyncDate,
+    state: state
+  };
 
   const heroDisplayEl = document.getElementById("heroCountDisplay");
   const heroLabelEl = document.getElementById("heroCountLabel");
   const heroSecondaryEl = document.getElementById("heroSecondaryText");
   const statusBadgeEl = document.getElementById("acquisitionStatusBadge");
+
+  const activeFilterContainerEl = document.getElementById("activeFilterContainer");
+  const activeFilterTextEl = document.getElementById("activeFilterText");
+  const countdownTextEl = document.getElementById("batchCountdownText");
 
   const titleEl = document.getElementById("acquisitionStatusTitle");
   const countDisplayEl = document.getElementById("acquisitionCountDisplay");
@@ -505,26 +653,46 @@ function updateAcquisitionDashboard(status) {
   const syncBadgeEl = document.getElementById("syncStatusBadge");
   const progressBarEl = document.getElementById("acquisitionProgressBar");
   const remainingEl = document.getElementById("acquisitionRemainingText");
-  const syncNetworkBtn = document.getElementById("syncNetworkBtn");
+  const syncAgainBtn = document.getElementById("syncAgainBtn") || document.getElementById("syncNetworkBtn");
   const ctaSectionEl = document.getElementById("networkReadyCtaSection");
   const ctaBtnEl = document.getElementById("openWarmGraphWorkspaceBtn");
 
-  const humanized = getHumanizedStateInfo(status);
+  const syncSuccessScreenEl = document.getElementById("syncSuccessScreen");
+  const syncedCountSubtextEl = document.getElementById("syncedCountSubtext");
+  const lastSyncedTimestampTextEl = document.getElementById("lastSyncedTimestampText");
+  const successContinueBtn = document.getElementById("successContinueToResearchBtn");
 
-  if (heroDisplayEl) {
-    heroDisplayEl.textContent = collected;
-  }
+  const humanized = getHumanizedStateInfo(currentSession);
 
-  if (heroLabelEl) {
-    heroLabelEl.textContent = collected === 1 ? "connection" : "connections";
-  }
-
-  if (heroSecondaryEl) {
-    if (expected > 0) {
-      heroSecondaryEl.textContent = `${collected} of ${expected} connections`;
+  // Active Filter display (PART 4)
+  if (activeFilterContainerEl && activeFilterTextEl) {
+    if (activeFilter) {
+      const filterLabelStr = typeof activeFilter === "object" ? (activeFilter.label || activeFilter.category || "Filter Active") : String(activeFilter);
+      activeFilterTextEl.textContent = filterLabelStr;
+      activeFilterContainerEl.style.display = "block";
     } else {
-      heroSecondaryEl.textContent = `${collected} connections discovered`;
+      activeFilterContainerEl.style.display = "none";
     }
+  }
+
+  if (state === "resting" || (actual > 0 && extracted === actual)) {
+    if (heroDisplayEl) heroDisplayEl.textContent = `${extracted} / ${actual} mapped`;
+    if (heroLabelEl) heroLabelEl.textContent = `(100%)`;
+    if (heroSecondaryEl) heroSecondaryEl.textContent = `All LinkedIn connections mapped`;
+    if (countDisplayEl) countDisplayEl.textContent = `${extracted} / ${actual} mapped`;
+    if (instructionEl) instructionEl.textContent = `No new connections found. Your network is fully synced.`;
+  } else if (actual > 0) {
+    if (heroDisplayEl) heroDisplayEl.textContent = `${extracted} / ${actual} mapped`;
+    if (heroLabelEl) heroLabelEl.textContent = `(${progressPercent}%)`;
+    if (heroSecondaryEl) heroSecondaryEl.textContent = `${extracted} of ${actual} connections catalogued`;
+    if (countDisplayEl) countDisplayEl.textContent = `${extracted} of ${actual} connections`;
+    if (instructionEl) instructionEl.textContent = humanized.subtext;
+  } else {
+    if (heroDisplayEl) heroDisplayEl.textContent = `${extracted} Connections Mapped`;
+    if (heroLabelEl) heroLabelEl.textContent = extracted === 1 ? "connection" : "connections";
+    if (heroSecondaryEl) heroSecondaryEl.textContent = `${extracted} connections discovered`;
+    if (countDisplayEl) countDisplayEl.textContent = `${extracted} connections found`;
+    if (instructionEl) instructionEl.textContent = humanized.subtext;
   }
 
   if (statusBadgeEl) {
@@ -535,37 +703,61 @@ function updateAcquisitionDashboard(status) {
     titleEl.textContent = humanized.title;
   }
 
-  if (countDisplayEl) {
-    if (expected > 0) {
-      countDisplayEl.textContent = `${collected} of ${expected} connections`;
+  // Batch Countdown display (PART 3)
+  if (countdownTextEl) {
+    if ((state === "waiting" || countdown > 0) && state !== "paused" && state !== "interrupted") {
+      countdownTextEl.textContent = `Next batch in ${countdown}s`;
+      countdownTextEl.style.display = "block";
     } else {
-      countDisplayEl.textContent = `${collected} connections found`;
+      countdownTextEl.style.display = "none";
     }
   }
 
-  if (instructionEl) {
-    instructionEl.textContent = humanized.subtext;
-  }
-
-  const completionStatus = status.completion_status || (state === "completed" ? (collected >= expected ? "complete" : "complete_rendered_dataset") : "incomplete");
-  const syncState = status.sync_status || "idle";
-
-  const pct = expected > 0 ? Math.min(100, Math.round((collected / expected) * 100)) : (collected > 0 ? 100 : 0);
-
   if (progressBarEl) {
-    progressBarEl.style.width = `${pct}%`;
+    progressBarEl.style.width = `${progressPercent}%`;
   }
 
   if (remainingEl) {
-    if (expected > 0) {
-      remainingEl.textContent = missing > 0 ? `${missing} connection${missing > 1 ? 's' : ''} remaining (${pct}%)` : `All ${collected} connections catalogued (100%)`;
+    if (state === "resting" || extracted === actual) {
+      remainingEl.textContent = `All ${extracted} catalogued (100%)`;
+    } else if (actual > 0) {
+      const missing = Math.max(0, actual - extracted);
+      remainingEl.textContent = `${missing} remaining (${progressPercent}%)`;
     } else {
-      remainingEl.textContent = `${collected} connections catalogued`;
+      remainingEl.textContent = `${extracted} connections catalogued`;
     }
   }
 
+  // Persistent Sync Success Screen (PART 5 & PART 6)
+  if (syncSuccessScreenEl) {
+    if (syncState === "synced" || state === "resting" || (actual > 0 && extracted === actual)) {
+      syncSuccessScreenEl.style.display = "block";
+      const titleScreenEl = syncSuccessScreenEl.querySelector("div:nth-child(2)");
+      if (titleScreenEl) titleScreenEl.textContent = "You're all caught up ✨";
+      if (syncedCountSubtextEl) {
+        syncedCountSubtextEl.textContent = `${extracted} connections synced`;
+      }
+      if (lastSyncedTimestampTextEl) {
+        const timeStr = status.last_synced_at || status.lastSyncedAt || "Just now";
+        lastSyncedTimestampTextEl.textContent = `Last synced: ${timeStr}`;
+      }
+    } else {
+      syncSuccessScreenEl.style.display = "none";
+    }
+  }
+
+  if (successContinueBtn && !successContinueBtn._hasInitListener) {
+    successContinueBtn._hasInitListener = true;
+    successContinueBtn.addEventListener("click", () => {
+      const researchContainer = document.getElementById("researchContainer");
+      if (researchContainer) {
+        researchContainer.scrollIntoView({ behavior: "smooth" });
+      }
+    });
+  }
+
   if (ctaSectionEl) {
-    if (humanized.isComplete) {
+    if (humanized.isComplete && syncState !== "synced") {
       ctaSectionEl.style.display = "block";
     } else {
       ctaSectionEl.style.display = "none";
@@ -582,64 +774,28 @@ function updateAcquisitionDashboard(status) {
     });
   }
 
-  // Sync Network Button logic
-  const isReadyToSync = (completionStatus === "complete" || completionStatus === "complete_rendered_dataset" || (state === "completed" && collected >= expected - 1));
-
-  if (syncNetworkBtn) {
-    if (isReadyToSync && syncState !== "synced") {
-      syncNetworkBtn.style.display = "inline-block";
-      if (syncState === "syncing") {
-        syncNetworkBtn.disabled = true;
-        syncNetworkBtn.textContent = "Syncing...";
-      } else {
-        syncNetworkBtn.disabled = false;
-        syncNetworkBtn.textContent = "Sync Network";
-      }
+  // Sync Again Button logic — ALWAYS visible & always dispatches SYNC_NETWORK
+  if (syncAgainBtn) {
+    syncAgainBtn.style.display = "inline-block";
+    if (syncState === "syncing") {
+      syncAgainBtn.disabled = true;
+      syncAgainBtn.textContent = "Syncing...";
     } else {
-      syncNetworkBtn.style.display = "none";
+      syncAgainBtn.disabled = false;
+      syncAgainBtn.textContent = "Sync Again";
     }
 
-    if (!syncNetworkBtn._hasInitListener) {
-      syncNetworkBtn._hasInitListener = true;
-      syncNetworkBtn.addEventListener("click", async () => {
-        try {
-          syncNetworkBtn.disabled = true;
-          syncNetworkBtn.textContent = "Syncing...";
-          const res = await sendTabMessage("syncToBackend");
-          if (res && res.success) {
-            syncNetworkBtn.textContent = "Synced ✓";
-            syncNetworkBtn.disabled = true;
-            if (latestData) {
-              latestData.sync_status = "synced";
-              latestData.syncStatus = "synced";
-            }
-            chrome.storage.local.get(["acquisition_session"], (localRes) => {
-              if (localRes && localRes.acquisition_session) {
-                const sess = localRes.acquisition_session;
-                sess.syncStatus = "synced";
-                sess.sync_status = "synced";
-                sess.syncMessage = "Backend sync completed successfully.";
-                chrome.storage.local.set({ acquisition_session: sess });
-              }
-            });
-            const updatedStatus = (res && res.status) ? { ...res.status, sync_status: "synced", syncStatus: "synced" } : {
-              ...(latestData || {}),
-              state: "completed",
-              completion_status: "complete",
-              sync_status: "synced",
-              syncStatus: "synced"
-            };
-            updateAcquisitionDashboard(updatedStatus);
-          } else {
-            syncNetworkBtn.disabled = false;
-            syncNetworkBtn.textContent = "Retry Sync";
-            alert("Sync failed: " + ((res && (res.sync_message || res.error)) || "Unknown error"));
-          }
-        } catch (err) {
-          syncNetworkBtn.disabled = false;
-          syncNetworkBtn.textContent = "Retry Sync";
-          alert("Sync error: " + err.message);
-        }
+    if (!syncAgainBtn._hasInitListener) {
+      syncAgainBtn._hasInitListener = true;
+      syncAgainBtn.addEventListener("click", async () => {
+        console.log("[SYNC] Button clicked");
+        syncAgainBtn.disabled = true;
+        syncAgainBtn.textContent = "Syncing...";
+
+        chrome.runtime.sendMessage({
+          type: "SYNC_NETWORK",
+          action: "SYNC_NETWORK"
+        });
       });
     }
   }
@@ -664,12 +820,26 @@ function updateAcquisitionDashboard(status) {
     });
   }
 
-  // Developer Extraction Dashboard button listener initialization
+  // Developer Extraction Dashboard & Diagnostics (Hidden when DEV_MODE = false)
   const devDashBtn = document.getElementById("openDevDashboardBtn");
-  if (devDashBtn && !devDashBtn._hasInitListener) {
+  const toggleBtn = document.getElementById("toggleDebugTelemetryBtn");
+  const diagEl = document.getElementById("telemetryDiagnostics");
+
+  if (!DEV_MODE) {
+    if (devDashBtn) devDashBtn.style.display = "none";
+    if (toggleBtn) toggleBtn.style.display = "none";
+    if (diagEl) diagEl.style.display = "none";
+  } else {
+    if (devDashBtn) devDashBtn.style.display = "inline-block";
+    if (toggleBtn) toggleBtn.style.display = "inline-block";
+  }
+
+  if (DEV_MODE && devDashBtn && !devDashBtn._hasInitListener) {
     devDashBtn._hasInitListener = true;
     devDashBtn.addEventListener("click", () => {
-      if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.create) {
+      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({ action: "OPEN_MY_NETWORK" });
+      } else if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.create) {
         chrome.tabs.create({ url: chrome.runtime.getURL("developer_dashboard.html") });
       } else if (typeof window !== "undefined") {
         window.open("developer_dashboard.html", "_blank");
@@ -677,10 +847,7 @@ function updateAcquisitionDashboard(status) {
     });
   }
 
-  // Developer Diagnostics drawer toggle listener initialization
-  const toggleBtn = document.getElementById("toggleDebugTelemetryBtn");
-  const diagEl = document.getElementById("telemetryDiagnostics");
-  if (toggleBtn && !toggleBtn._hasInitListener) {
+  if (DEV_MODE && toggleBtn && !toggleBtn._hasInitListener) {
     toggleBtn._hasInitListener = true;
     toggleBtn.addEventListener("click", () => {
       if (diagEl.style.display === "none" || !diagEl.style.display) {
@@ -762,43 +929,118 @@ function updateAcquisitionDashboard(status) {
 
 function fetchAcquisitionStatus() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(["acquisition_session"], (localRes) => {
-      const localSession = localRes ? localRes.acquisition_session : null;
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(["acquisition_session", "currentSession"], (localRes) => {
+        let localSession = (localRes && localRes.acquisition_session) || null;
+        const currentSession = (localRes && localRes.currentSession) || null;
 
-      const finishWithStatus = (res) => {
-        if (res && res.status && localSession) {
-          if (localSession.syncStatus === "synced" || localSession.sync_status === "synced") {
-            res.status.syncStatus = "synced";
-            res.status.sync_status = "synced";
-          }
+        if (currentSession) {
+          if (!localSession) localSession = {};
+          localSession = {
+            ...localSession,
+            extractedConnections: currentSession.extractedConnections !== undefined ? currentSession.extractedConnections : (localSession.extractedConnections || currentSession.actualProfiles || 0),
+            collected_count: currentSession.actualProfiles !== undefined ? currentSession.actualProfiles : (localSession.collected_count || currentSession.extractedConnections || 0),
+            totalConnections: currentSession.totalConnections !== undefined ? currentSession.totalConnections : localSession.totalConnections,
+            expected_total: currentSession.totalConnections !== undefined ? currentSession.totalConnections : localSession.expected_total,
+            lastSyncDate: currentSession.lastSyncDate || localSession.lastSyncDate || "Today"
+          };
         }
-        resolve(res);
-      };
 
-      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-        chrome.runtime.sendMessage({ action: "GET_SESSION_STATUS" }, (bgRes) => {
-          if (!chrome.runtime.lastError && bgRes && bgRes.status && bgRes.status.state !== "idle") {
-            return finishWithStatus(bgRes);
-          }
-          sendTabMessage("getAcquisitionStatus").then(tabRes => {
-            finishWithStatus(tabRes);
-          }).catch(() => {
-            if (bgRes && bgRes.status) {
-              finishWithStatus(bgRes);
-            } else if (localSession) {
-              finishWithStatus({ success: true, status: localSession });
-            } else {
-              resolve(null);
+        const finishWithStatus = (res) => {
+          if (res && res.status && localSession) {
+            if (localSession.syncStatus === "synced" || localSession.sync_status === "synced") {
+              res.status.syncStatus = "synced";
+              res.status.sync_status = "synced";
             }
+          }
+          resolve(res || (localSession ? { success: true, status: localSession } : null));
+        };
+
+        if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({ action: "GET_SESSION_STATUS" }, (bgRes) => {
+            if (!chrome.runtime.lastError && bgRes && bgRes.status && bgRes.status.state !== "idle") {
+              return finishWithStatus(bgRes);
+            }
+            sendTabMessage("getAcquisitionStatus").then(tabRes => {
+              finishWithStatus(tabRes);
+            }).catch(() => {
+              if (bgRes && bgRes.status) {
+                finishWithStatus(bgRes);
+              } else if (localSession) {
+                finishWithStatus({ success: true, status: localSession });
+              } else {
+                resolve(null);
+              }
+            });
           });
+        } else {
+          sendTabMessage("getAcquisitionStatus").then(tabRes => finishWithStatus(tabRes)).catch(() => {
+            if (localSession) finishWithStatus({ success: true, status: localSession });
+            else resolve(null);
+          });
+        }
+      });
+    } else {
+      resolve(null);
+    }
+  });
+}
+
+async function getActiveConnections() {
+  if (typeof chrome === "undefined" || !chrome?.storage?.local) return [];
+  const res = await new Promise(r => chrome.storage.local.get(
+    ["warmgraph_active_graph", "stored_connections", "acquisition_session", "currentSession"],
+    r
+  ));
+
+  const activeGraph = res?.warmgraph_active_graph;
+  let connections = [];
+  if (Array.isArray(activeGraph)) {
+    connections = activeGraph;
+  } else if (Array.isArray(activeGraph?.connections)) {
+    connections = activeGraph.connections;
+  }
+
+  if (!connections || connections.length === 0) {
+    if (res?.stored_connections && Array.isArray(res.stored_connections)) {
+      connections = res.stored_connections;
+    } else if (res?.currentSession?.connections && Array.isArray(res.currentSession.connections)) {
+      connections = res.currentSession.connections;
+    } else if (res?.acquisition_session?.connections && Array.isArray(res.acquisition_session.connections)) {
+      connections = res.acquisition_session.connections;
+    }
+  }
+
+  return connections || [];
+}
+
+async function hydrateActiveGraphPreview() {
+  const connections = await getActiveConnections();
+  if (connections && connections.length > 0) {
+    latestData = { connections: connections, first_degree_count: connections.length };
+    renderExtractionPreview(latestData);
+  }
+}
+
+if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (namespace === "local") {
+      if (changes.currentSession || changes.acquisition_session || changes.warmgraph_active_graph) {
+        fetchAcquisitionStatus().then((res) => {
+          if (res && res.status) {
+            updateAcquisitionDashboard(res.status);
+          }
         });
-      } else {
-        sendTabMessage("getAcquisitionStatus").then(tabRes => finishWithStatus(tabRes)).catch(() => {
-          if (localSession) finishWithStatus({ success: true, status: localSession });
-          else resolve(null);
-        });
+        hydrateActiveGraphPreview();
       }
-    });
+      // Update identity banner immediately when content.js writes warmgraph_owner
+      if (changes.warmgraph_owner) {
+        const owner = changes.warmgraph_owner.newValue;
+        if (owner && owner.ownerId) {
+          renderIdentityReady(owner.ownerId, owner.profileUrl);
+        }
+      }
+    }
   });
 }
 
@@ -833,6 +1075,7 @@ function stopStatusPolling() {
   } catch (e) {
     // Ignore initial error
   }
+  hydrateActiveGraphPreview();
   startStatusPolling();
 })();
 
@@ -959,23 +1202,29 @@ if (extractBtn) {
    BACKEND HELPERS
 ========================================================= */
 
+/**
+ * Get the canonical owner ID for all backend requests.
+ * Loads strictly from warmgraph_owner.ownerId (or legacy ownerId key if non-UUID).
+ * Never derives from selected target, current profile page, or session.
+ */
 async function getOwnerForBackend() {
+  const { warmgraph_owner, ownerId } = await new Promise((resolve) => {
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(["warmgraph_owner", "ownerId"], (res) => resolve(res || {}));
+    } else {
+      resolve({});
+    }
+  });
 
-  const identity =
-    await getStoredOwnerId();
+  const canonicalId = warmgraph_owner?.ownerId || (ownerId && !ownerId.startsWith("warmgraph_") ? ownerId : null);
 
-
-  if (!identity.ownerId) {
-
+  if (!canonicalId) {
     throw new Error(
-      "Owner identity is not ready yet."
+      "Owner identity not detected yet. Please open your LinkedIn profile page once to let WarmGraph identify you."
     );
-
   }
 
-
-  return identity.ownerId;
-
+  return canonicalId;
 }
 
 
@@ -1025,7 +1274,6 @@ document
         const ownerId =
           await getOwnerForBackend();
 
-
         const result =
           await backendRequest(
             "/refresh",
@@ -1049,6 +1297,22 @@ document
             }
           );
 
+        // Reload persisted backend graph into warmgraph_active_graph
+        try {
+          const network = await backendRequest(`/network/${encodeURIComponent(ownerId)}`);
+          if (network && Array.isArray(network.connections)) {
+            if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+              chrome.storage.local.set({
+                warmgraph_active_graph: {
+                  owner_id: ownerId,
+                  connections: network.connections,
+                  totalConnections: network.connections.length,
+                  lastRefreshedAt: new Date().toISOString()
+                }
+              });
+            }
+          }
+        } catch (_) {}
 
         output.innerHTML = `
 
@@ -1170,19 +1434,8 @@ document
           `;
         }
 
-        const result = await backendRequest("/target/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody)
-        });
-
+        const result = await handleTargetSearch(company, targetRole, dealSide, ownerId);
         targetSearchState = result;
-        console.log("[TARGET SEARCH]", {
-          query: requestBody,
-          responseCandidates: result.candidates ? result.candidates.length : 0,
-          targetResultsRendered: (result.candidates || result.results || []).length
-        });
-
         renderTargetSearch(targetSearchState);
 
       } catch (error) {
@@ -1198,6 +1451,80 @@ document
       }
     }
   );
+
+function searchLocalConnections(connections, company, targetRole) {
+  const companyQuery = (company || "").trim().toLowerCase();
+  const roleQuery = (targetRole || "").trim().toLowerCase();
+
+  const candidates = (connections || []).filter(c => {
+    const searchable = [
+      c.name,
+      c.headline,
+      c.occupation,
+      c.company,
+      c.profile_url
+    ].filter(Boolean).join(" ").toLowerCase();
+
+    const companyMatch = !companyQuery || searchable.includes(companyQuery);
+    const roleMatch = !roleQuery || searchable.includes(roleQuery);
+
+    return companyMatch && roleMatch;
+  }).map(connection => ({
+    name: connection.name || "Unknown",
+    headline: connection.headline || connection.occupation || connection.title || "",
+    profile_url: connection.profile_url || connection.url || connection.link || "",
+    degree: connection.degree || "1st",
+    confidence: connection.confidence !== undefined ? connection.confidence : 1.0,
+    warmth: connection.warmth !== undefined ? connection.warmth : "High",
+    matched_role: targetRole || "Connection",
+    reason: `Matched from Active Graph (${connection.name || "Connection"})`
+  }));
+
+  return {
+    company: company,
+    deal_side: "sell_side",
+    candidates: candidates
+  };
+}
+
+async function handleTargetSearch(company, role, dealSide, ownerId) {
+  // 1. Single Shared Source of Truth: getActiveConnections()
+  const connections = await getActiveConnections();
+
+  if (connections && connections.length > 0) {
+    const localResult = searchLocalConnections(connections, company, role);
+    if (localResult && localResult.candidates && localResult.candidates.length > 0) {
+      return localResult;
+    }
+  }
+
+  // 2. If local graph is missing, THEN call /target/search
+  try {
+    const result = await backendRequest("/target/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        owner_id: ownerId,
+        company: company,
+        deal_side: dealSide,
+        target_role: role
+      })
+    });
+    return result;
+  } catch (error) {
+    return {
+      company: company,
+      deal_side: dealSide,
+      candidates: [],
+      error: error.message
+    };
+  }
+}
+
+async function searchLocalActiveGraph(company, targetRole) {
+  const connections = await getActiveConnections();
+  return searchLocalConnections(connections, company, targetRole);
+}
 
 
 /* =========================================================
@@ -1246,25 +1573,30 @@ function renderTargetSearch(result) {
 
     html += `
       <div class="record">
-        <div class="record-name">${escapeHtml(name)}</div>
-        ${headline ? `<div class="record-headline">${escapeHtml(headline)}</div>` : ""}
+        <div class="record-header">
+          <div class="avatar-circle">${escapeHtml(getInitials(name))}</div>
+          <div>
+            <div class="record-name">${escapeHtml(name)}</div>
+            ${headline ? `<div class="record-headline">${escapeHtml(headline)}</div>` : ""}
+          </div>
+        </div>
 
         <div class="record-meta">
           ${person.degree ? `<span class="badge">${escapeHtml(person.degree)}</span>` : ""}
           ${person.matched_role ? `<span class="badge">Role match</span>` : ""}
-          ${person.confidence !== undefined ? `<span class="badge">Confidence: ${escapeHtml(person.confidence)}</span>` : ""}
-          ${person.warmth !== undefined ? `<span class="badge">Warmth: ${escapeHtml(person.warmth)}</span>` : ""}
+          ${person.confidence !== undefined ? `<span class="badge badge-success">Confidence: ${escapeHtml(person.confidence)}</span>` : ""}
+          ${person.warmth !== undefined ? `<span class="badge badge-success">Warmth: ${escapeHtml(person.warmth)}</span>` : ""}
         </div>
 
         ${person.reason ? `<div class="mutual"><strong>Why matched:</strong> ${escapeHtml(person.reason)}</div>` : ""}
         ${person.path_count !== undefined ? `<div class="mutual"><strong>Paths found:</strong> ${escapeHtml(person.path_count)}</div>` : ""}
 
         ${targetUrl ? `
-          <div style="margin-top:8px; display:flex; gap:6px;">
-            <button type="button" class="use-as-target-btn" data-url="${escapeHtml(targetUrl)}" data-name="${escapeHtml(name)}" data-role="${escapeHtml(headline || '')}" style="flex:1; padding:6px 10px; font-size:11px; background:#eef4ff; color:#0A66C2; border:1px solid #b8c9e8; border-radius:4px; cursor:pointer; font-weight:600;">
-              Use as Path Target
+          <div style="margin-top:10px; display:flex; gap:8px;">
+            <button type="button" class="use-as-target-btn secondary-action-btn" data-url="${escapeHtml(targetUrl)}" data-name="${escapeHtml(name)}" data-role="${escapeHtml(headline || '')}" style="flex:1; min-height:36px; padding:0 10px; font-size:11px;">
+              Use as Target
             </button>
-            <button type="button" class="find-candidate-path-btn" data-url="${escapeHtml(targetUrl)}" data-name="${escapeHtml(name)}" data-role="${escapeHtml(headline || '')}" style="flex:1; padding:6px 10px; font-size:11px; background:#0A66C2; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:600;">
+            <button type="button" class="find-candidate-path-btn primary-action-btn" data-url="${escapeHtml(targetUrl)}" data-name="${escapeHtml(name)}" data-role="${escapeHtml(headline || '')}" style="flex:1; min-height:36px; padding:0 10px; font-size:11px;">
               Find Warm Path
             </button>
           </div>
@@ -1277,7 +1609,27 @@ function renderTargetSearch(result) {
   container.innerHTML = html;
 
   const selectTarget = (url, name, role) => {
-    selectedTargetState = { url, name, role };
+    let targetId = url;
+    if (url.includes("/in/")) {
+      const match = url.match(/\/in\/([^/?#]+)/);
+      if (match && match[1]) targetId = match[1];
+    }
+
+    selectedTargetState = { url, name, role, targetId };
+
+    // Write canonical selected_target — NEVER touches warmgraph_owner
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({
+        selected_target: {
+          targetId: targetId,
+          name: name || "",
+          profileUrl: url,
+          role: role || "",
+          selectedAt: new Date().toISOString()
+        }
+      });
+    }
+
     const targetInput = document.getElementById("pathTarget");
     if (targetInput) {
       targetInput.value = url;
@@ -1328,11 +1680,24 @@ document
 
       try {
 
-        const ownerId =
-          await getOwnerForBackend();
+        const { warmgraph_owner, ownerId: legacyOwnerId, selected_target } =
+          await new Promise(r => {
+            if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+              chrome.storage.local.get(["warmgraph_owner", "ownerId", "selected_target"], r);
+            } else {
+              r({});
+            }
+          });
 
+        const ownerId = warmgraph_owner?.ownerId || (legacyOwnerId && !legacyOwnerId.startsWith("warmgraph_") ? legacyOwnerId : null);
 
-        const targetId =
+        if (!ownerId) {
+          throw new Error(
+            "Owner identity not detected yet. Please open your LinkedIn profile page once to let WarmGraph identify you."
+          );
+        }
+
+        const inputTargetUrl =
           document
             .getElementById(
               "pathTarget"
@@ -1340,8 +1705,7 @@ document
             .value
             .trim();
 
-
-        if (!targetId) {
+        if (!inputTargetUrl) {
           if (pathResultsEl) {
             pathResultsEl.innerHTML = `
               <div class="status-box">
@@ -1360,13 +1724,31 @@ document
           `;
         }
 
+        const st = selected_target;
+        const targetUrl = (inputTargetUrl && st?.profileUrl && (st.profileUrl === inputTargetUrl || inputTargetUrl.includes(st.targetId))) ? st.profileUrl : inputTargetUrl;
+        const targetId = st?.targetId || (inputTargetUrl.match(/\/in\/([^/?#]+)/)?.[1] || inputTargetUrl);
+        const targetName = st?.name || "";
+
+        // Store into selected_target — NEVER touch warmgraph_owner
+        if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.set({
+            selected_target: {
+              targetId: targetId,
+              name: targetName || targetId,
+              profileUrl: targetUrl
+            }
+          });
+        }
+
         const result = await backendRequest("/graph/path", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             owner_id: ownerId,
             source_id: ownerId,
+            target_url: targetUrl,
             target_id: targetId,
+            target_name: targetName,
             cutoff: 4
           })
         });
@@ -1399,10 +1781,26 @@ document
     "click",
     async () => {
       try {
-        const ownerId = await getOwnerForBackend();
-        const targetId = document.getElementById("pathTarget").value.trim();
+        const { warmgraph_owner, ownerId: legacyOwnerId, selected_target } =
+          await new Promise(r => {
+            if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+              chrome.storage.local.get(["warmgraph_owner", "ownerId", "selected_target"], r);
+            } else {
+              r({});
+            }
+          });
 
-        if (!targetId) {
+        const ownerId = warmgraph_owner?.ownerId || (legacyOwnerId && !legacyOwnerId.startsWith("warmgraph_") ? legacyOwnerId : null);
+
+        if (!ownerId) {
+          throw new Error(
+            "Owner identity not detected yet. Please open your LinkedIn profile page once to let WarmGraph identify you."
+          );
+        }
+
+        const inputTargetUrl = document.getElementById("pathTarget").value.trim();
+
+        if (!inputTargetUrl) {
           if (pathResultsEl) {
             pathResultsEl.innerHTML = `
               <div class="status-box">
@@ -1421,13 +1819,20 @@ document
           `;
         }
 
+        const st = selected_target;
+        const targetUrl = (inputTargetUrl && st?.profileUrl && (st.profileUrl === inputTargetUrl || inputTargetUrl.includes(st.targetId))) ? st.profileUrl : inputTargetUrl;
+        const targetId = st?.targetId || (inputTargetUrl.match(/\/in\/([^/?#]+)/)?.[1] || inputTargetUrl);
+        const targetName = st?.name || "";
+
         const result = await backendRequest("/graph/explain-path", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             owner_id: ownerId,
             source_id: ownerId,
+            target_url: targetUrl,
             target_id: targetId,
+            target_name: targetName,
             cutoff: 4
           })
         });
@@ -1454,9 +1859,33 @@ document
    PATH EXPLANATION RESULT
 ========================================================= */
 
+function renderEvidenceBadges(evidenceList) {
+  if (!Array.isArray(evidenceList) || evidenceList.length === 0) return "";
+
+  const iconMap = {
+    same_college: "🎓",
+    student_faculty: "👨‍🏫",
+    same_dept: "🏛️",
+    same_company: "💼",
+    same_city: "📍",
+    linkedin_1st_degree: "⚡"
+  };
+
+  const badgesHtml = evidenceList.map(ev => {
+    const icon = iconMap[ev.type] || "🔗";
+    const confPercent = Math.round((ev.confidence || 0.7) * 100);
+    return `<span class="badge" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.35); color: #38bdf8; font-size: 11px; padding: 4px 8px; margin-right: 4px; margin-top: 4px; display: inline-flex; align-items: center; gap: 4px;">
+      ${icon} ${escapeHtml(ev.label)} (${confPercent}%)
+    </span>`;
+  }).join("");
+
+  return `<div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px;">${badgesHtml}</div>`;
+}
+
 function renderPathExplanation(result) {
   const explanation = result.explanation || result.message || result.detail || "";
   const paths = Array.isArray(result.paths) ? result.paths : [];
+  const topEvidence = Array.isArray(result.evidence) ? result.evidence : [];
   const container = pathResultsEl || document.getElementById("pathResults") || output;
 
   let html = `
@@ -1465,6 +1894,7 @@ function renderPathExplanation(result) {
 
   if (paths.length > 0) {
     paths.forEach((path, index) => {
+      const pathEv = Array.isArray(path.evidence) ? path.evidence : [];
       html += `
         <div class="record">
           <div class="record-name">Path ${index + 1}</div>
@@ -1480,6 +1910,7 @@ function renderPathExplanation(result) {
           ${path.explanation ? `
             <div class="mutual"><strong>Explanation:</strong> ${escapeHtml(path.explanation)}</div>
           ` : ""}
+          ${pathEv.length > 0 ? renderEvidenceBadges(pathEv) : ""}
         </div>
       `;
     });
@@ -1490,6 +1921,7 @@ function renderPathExplanation(result) {
       <div class="record">
         <div class="record-name">Explanation</div>
         <div class="record-headline">${escapeHtml(explanation)}</div>
+        ${topEvidence.length > 0 ? renderEvidenceBadges(topEvidence) : ""}
       </div>
     `;
   }
@@ -1534,15 +1966,38 @@ function renderPathResult(result) {
   `;
 
   paths.forEach((path, index) => {
+    const nodeArray = Array.isArray(path.path) ? path.path : [];
     html += `
       <div class="record">
-        <div class="record-name">Path ${index + 1}</div>
-        ${path.hops !== undefined ? `<div class="record-meta"><span class="badge">${escapeHtml(path.hops)} hops</span></div>` : ""}
-        ${path.warmth !== undefined ? `<div class="mutual"><strong>Warmth:</strong> ${escapeHtml(path.warmth)}</div>` : ""}
-        ${path.explanation ? `<div class="mutual"><strong>Explanation:</strong> ${escapeHtml(path.explanation)}</div>` : ""}
-        ${Array.isArray(path.path) ? `<div class="mutual"><strong>Path:</strong> ${escapeHtml(path.path.join(" → "))}</div>` : ""}
-        <div style="margin-top:8px;">
-          <button type="button" class="explain-single-path-btn" data-path="${escapeHtml(JSON.stringify(path.path || []))}" style="width:auto; padding:5px 10px; font-size:11px; background:#f0f4f9; color:#1a73e8; border:1px solid #dadce0; border-radius:4px; cursor:pointer; font-weight:600;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div class="record-name">Warm Path ${index + 1}</div>
+          <div>
+            ${path.hops !== undefined ? `<span class="badge">${escapeHtml(path.hops)} hops</span>` : ""}
+            ${path.warmth !== undefined ? `<span class="badge badge-success">Warmth: ${escapeHtml(path.warmth)}</span>` : ""}
+          </div>
+        </div>
+
+        ${nodeArray.length > 0 ? `
+          <div class="timeline-wrapper">
+            ${nodeArray.map((node, i) => `
+              ${i > 0 ? `<div class="timeline-connector">↓</div>` : ""}
+              <div class="timeline-node">
+                <div class="avatar-circle">${escapeHtml(getInitials(node))}</div>
+                <div>
+                  <div class="record-name">${escapeHtml(node)}</div>
+                  <div class="record-headline">${i === 0 ? "You (Graph Owner)" : (i === nodeArray.length - 1 ? "Target Profile" : "Intermediate Warm Connection")}</div>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        ` : ""}
+
+        ${path.explanation ? `<div class="mutual" style="margin-top:10px;"><strong>Explanation:</strong> ${escapeHtml(path.explanation)}</div>` : ""}
+
+        ${Array.isArray(path.evidence) && path.evidence.length > 0 ? renderEvidenceBadges(path.evidence) : ""}
+
+        <div style="margin-top:12px;">
+          <button type="button" class="explain-single-path-btn secondary-action-btn" data-path="${escapeHtml(JSON.stringify(nodeArray))}" style="width:100%; min-height:36px; font-size:11px;">
             Explain This Path
           </button>
         </div>
@@ -1843,6 +2298,21 @@ if (sendBtn) {
               result.detail ||
               "Backend request failed."
             );
+          }
+
+          // Step 2: Ensure warmgraph_active_graph.owner_id matches canonical ownerId
+          if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+            chrome.storage.local.get(["warmgraph_owner", "warmgraph_active_graph"], (stored) => {
+              const canonicalOwnerId = stored.warmgraph_owner?.ownerId || identity.ownerId;
+              const activeGraph = stored.warmgraph_active_graph || {};
+              activeGraph.owner_id = canonicalOwnerId;
+              activeGraph.connections = latestData.connections || activeGraph.connections || [];
+              activeGraph.totalConnections = activeGraph.connections.length;
+
+              chrome.storage.local.set({
+                warmgraph_active_graph: activeGraph
+              });
+            });
           }
 
           output.innerHTML = `
