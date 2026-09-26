@@ -17,6 +17,7 @@ from auth.context import AuthContext, current_context, require_owner_access
 from auth.audit import security_audit
 from .graph_cache import TenantGraphCache
 from .scoring import rank_paths, score_path, graph_recency_reference_date
+from .relationship_service import resolve_path_evidence, RelationshipEvidenceEngine
 
 
 def profile_node_id(profile_url: str) -> str:
@@ -403,6 +404,11 @@ class GraphService:
             for path in raw_paths
         ]
         ranked = rank_paths(scored_paths)
+
+        # Attach relationship evidence objects to paths
+        for p in ranked:
+            p["evidence"] = resolve_path_evidence(graph, p.get("path", []))
+
         duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
         security_audit("path_search_executed", "completed", {
@@ -509,11 +515,15 @@ class GraphService:
         explanation = " ".join(statements)
         explanation += f" This produces a {hop_count}-hop warm path."
 
+        # Resolve structured evidence objects across all priority tiers
+        path_evidence = resolve_path_evidence(graph, path)
+
         return {
             "owner_id": owner_id,
             "path": path,
             "hops": hop_count,
             "explanation": explanation,
+            "evidence": path_evidence,
         }
 
     def generate_graph_html(self, graph: nx.DiGraph) -> str:
