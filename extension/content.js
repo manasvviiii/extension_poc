@@ -1004,12 +1004,10 @@ async function autoAdvanceToNextPage(session) {
     const clickTarget = next.closest?.("button, a") || next;
     const targetHref = clickTarget.getAttribute?.("href") || clickTarget.closest?.("a")?.getAttribute?.("href");
 
-    console.log("[WarmGraph][CLICK NEXT]", {
+    console.log("[NEXT CLICK]", {
       page: currentPageNum,
-      nextPage: nextPageNum,
-      targetTag: clickTarget.tagName,
-      targetHref,
-      href: location.href
+      target: nextPageNum,
+      url: location.href
     });
 
     try {
@@ -1019,14 +1017,6 @@ async function autoAdvanceToNextPage(session) {
     if (typeof clickTarget.click === "function") {
       clickTarget.click();
     }
-
-    try {
-      clickTarget.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
-      clickTarget.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
-      clickTarget.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, view: window }));
-      clickTarget.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
-      clickTarget.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-    } catch (_) {}
 
     console.log("[WarmGraph][PeopleSearch] autoAdvance: click returned", {
       page: currentPageNum,
@@ -2385,6 +2375,14 @@ async function startAutomaticAcquisition() {
 }
 
 class ConnectionAcquisitionSession {
+  get running() {
+    return !!(
+      this.isRunning ||
+      (typeof window !== "undefined" && window.__warmgraphAcquisitionRunning) ||
+      this.activeLoopPromise
+    );
+  }
+
   constructor() {
     this.sessionId = `warmgraph_session_${Date.now()}`;
     this.connections = new Map();
@@ -2886,6 +2884,8 @@ class ConnectionAcquisitionSession {
     }
     let newProfilesCount = 0;
     let duplicatesSkippedCount = 0;
+    const enrichmentPromises = [];
+    const uniqueUrls = new Set();
 
     const rawDomCards = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
     const domCards = Array.from(rawDomCards).filter(
@@ -2896,6 +2896,7 @@ class ConnectionAcquisitionSession {
     for (const anchor of domCards) {
       const profileUrl = normalizeProfileUrl(anchor.href);
       if (!profileUrl) continue;
+      uniqueUrls.add(profileUrl);
 
       const card = getCardRoot(anchor);
       if (!card || processedCardRoots.has(card)) continue;
@@ -2970,7 +2971,10 @@ class ConnectionAcquisitionSession {
         }
 
         if (typeof hoverIntelligenceEngine !== "undefined") {
-          hoverIntelligenceEngine.waitForProfileEnrichment(this.connections.get(key) || firstDegree, 1200);
+          const p = hoverIntelligenceEngine.waitForProfileEnrichment(this.connections.get(key) || firstDegree, 1200);
+          if (p && typeof p.then === "function") {
+            enrichmentPromises.push(p);
+          }
         }
       } else {
         const evidence = extractRelationshipEvidence(card, resolvedProfileAnchor);
@@ -2996,7 +3000,9 @@ class ConnectionAcquisitionSession {
     return {
       newProfilesCount,
       duplicatesSkippedCount,
-      totalVisibleCards: processedCardRoots.size
+      totalVisibleCards: processedCardRoots.size,
+      uniqueUrlsCount: uniqueUrls.size,
+      enrichmentPromises
     };
   }
 
@@ -3419,11 +3425,18 @@ class ConnectionAcquisitionSession {
   }
 
   async runAcquisitionLoop() {
+    if (this.running && this.isRunning) {
+      console.log(`[LOOP START] ignored because acquisition already running: sessionId=${this.sessionId}`);
+      return;
+    }
     if (typeof window !== "undefined") {
       window.__warmgraphAcquisitionRunning = true;
     }
     this.isRunning = true;
-    if (getAcquisitionEngineType() !== "PEOPLE_SEARCH") this.pageCount = 0;
+    console.log(`[LOOP START] sessionId=${this.sessionId}`);
+
+    try {
+      if (getAcquisitionEngineType() !== "PEOPLE_SEARCH") this.pageCount = 0;
     this.shouldCancel = false;
     let consecutiveZeroNewCardScrolls = 0;
     const MAX_ZERO_NEW_CARD_SCROLLS = 4;
@@ -3529,6 +3542,7 @@ class ConnectionAcquisitionSession {
         this.pageCount++;
       }
       this.pageExtractionComplete = false;
+      console.log(`[LOOP PAGE] page=${this.pageCount}`);
       console.log("[WarmGraph][PeopleSearch] extraction page started", {
         page: this.pageCount,
         sessionId: this.sessionId,
@@ -3585,24 +3599,33 @@ class ConnectionAcquisitionSession {
           batchDuplicatesSkipped += scanRes.duplicatesSkippedCount;
           batchVisibleCardsCount = scanRes.totalVisibleCards;
 
-          if (scanRes.newProfilesCount > 0) {
-            peopleSearchIdleRounds = 0;
-            consecutiveZeroNewCardScrolls = 0;
-            console.log(`[WarmGraph] Added ${scanRes.newProfilesCount} new profiles (${this.connections.size} total)`);
-            await this.checkpointSession();
-            continue;
-          }
-
-          // If profiles were captured on this page and no new profiles remain, await pending extraction tasks before pagination decision
+          // Await all enrichment jobs for this page before making pagination decision
           if (this.connections.size > 0 || scanRes.totalVisibleCards > 0) {
-            console.log(`[WarmGraph] Visible cards: ${scanRes.totalVisibleCards}`);
-            console.log(`[WarmGraph] Pending hover tasks: ${typeof hoverIntelligenceEngine !== "undefined" ? hoverIntelligenceEngine.getPendingCount() : 0}`);
-            if (typeof hoverIntelligenceEngine !== "undefined") {
+            const visibleCards = scanRes.totalVisibleCards;
+            const uniqueUrls = scanRes.uniqueUrlsCount || visibleCards;
+            const hoverQueued = scanRes.enrichmentPromises ? scanRes.enrichmentPromises.length : 0;
+            let hoverCompleted = 0;
+
+            if (scanRes.enrichmentPromises && scanRes.enrichmentPromises.length > 0) {
+              const results = await Promise.allSettled(scanRes.enrichmentPromises);
+              hoverCompleted = results.length;
+            } else if (typeof hoverIntelligenceEngine !== "undefined") {
               await hoverIntelligenceEngine.waitForAllPending(5000);
+              hoverCompleted = visibleCards;
             }
-            console.log(`[WarmGraph] Pending hover tasks after wait: ${typeof hoverIntelligenceEngine !== "undefined" ? hoverIntelligenceEngine.getPendingCount() : 0}`);
-            console.log(`[WarmGraph] Page ${this.pageCount} enrichment verified (${this.connections.size} total). Moving to pagination decision.`);
+
+            const recordsStored = this.connections.size;
+
+            console.log(`[PAGE] Visible cards: ${visibleCards}`);
+            console.log(`[PAGE] Unique URLs: ${uniqueUrls}`);
+            console.log(`[PAGE] Hover queued: ${hoverQueued}`);
+            console.log(`[PAGE] Hover completed: ${hoverCompleted}`);
+            console.log(`[PAGE] Records stored: ${recordsStored}`);
+
             await this.checkpointSession();
+            console.log("[PAGE] Checkpoint complete");
+            console.log("[PAGE] Safe to paginate");
+
             break;
           }
 
@@ -3814,28 +3837,31 @@ class ConnectionAcquisitionSession {
       this.countdownSeconds = 0;
     }
 
-    if (this.finishRequested) {
-      await this.completeAndSync();
-    } else if (this.pauseRequested) {
-      this.pauseRequested = false;
-      this.shouldCancel = false;
-      this.state = "paused";
-      this.statusMessage = "Progress saved. Continue when you're ready.";
-      await this.checkpointSession();
-    } else if (this.shouldCancel) {
-      if (!/^Degree filter/.test(this.statusMessage || "")) {
-        this.state = "idle";
-        this.statusMessage = "Acquisition cancelled.";
+      if (this.finishRequested) {
+        await this.completeAndSync();
+      } else if (this.pauseRequested) {
+        this.pauseRequested = false;
+        this.shouldCancel = false;
+        this.state = "paused";
+        this.statusMessage = "Progress saved. Continue when you're ready.";
+        await this.checkpointSession();
+      } else if (this.shouldCancel) {
+        if (!/^Degree filter/.test(this.statusMessage || "")) {
+          this.state = "idle";
+          this.statusMessage = "Acquisition cancelled.";
+        }
+        await this.checkpointSession();
       }
-      await this.checkpointSession();
+    } finally {
+      if (typeof window !== "undefined") {
+        window.__warmgraphAcquisitionRunning = false;
+      }
+      this.isRunning = false;
+      this.activeLoopPromise = null;
+      this.nextBatchResolver = null;
+      console.log(`[LOOP END] sessionId=${this.sessionId}`);
+      console.log("[WarmGraph] Session ended", { sessionId: this.sessionId, page: this.pageCount, state: this.state, extracted: this.connections.size });
     }
-    if (typeof window !== "undefined") {
-      window.__warmgraphAcquisitionRunning = false;
-    }
-    this.isRunning = false;
-    this.activeLoopPromise = null;
-    this.nextBatchResolver = null;
-    console.log("[WarmGraph] Session ended", { sessionId: this.sessionId, page: this.pageCount, state: this.state, extracted: this.connections.size });
   }
 
   async reconcileNetworkWithDom(forceCheck = false) {
@@ -5240,8 +5266,14 @@ async function handlePeopleSearchUrlChange(trigger = "direct") {
     }
   }
 
-  if (window.__warmgraphAcquisitionRunning || handlingPeopleSearchUrlChange) {
-    console.log("[WarmGraph][PeopleSearch] handler returned: acquisition already running or URL handler busy", { acquisitionRunning: !!window.__warmgraphAcquisitionRunning, handling: handlingPeopleSearchUrlChange, state: acquisitionSession.state, url: nextUrl });
+  if (
+    acquisitionSession.running ||
+    acquisitionSession.state === "acquiring" ||
+    acquisitionSession.state === "navigating" ||
+    window.__warmgraphAcquisitionRunning ||
+    handlingPeopleSearchUrlChange
+  ) {
+    console.log("[URL OBSERVER] ignored because acquisition already running");
     return;
   }
   console.log("[WarmGraph][PeopleSearch] eligible SPA route; waiting for result cards", { url: nextUrl });
