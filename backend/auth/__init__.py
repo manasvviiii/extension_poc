@@ -1,7 +1,7 @@
 """Replaceable authentication and authorization boundary."""
 
 from .context import AuthContext, compatibility_context, current_context
-from .dependencies import AuthSettings, get_auth_context, settings
+from .dependencies import AuthSettings, get_auth_context, get_current_user, LocalUser, settings
 
 __all__ = [
     "AuthContext",
@@ -9,5 +9,7 @@ __all__ = [
     "compatibility_context",
     "current_context",
     "get_auth_context",
+    "get_current_user",
+    "LocalUser",
     "settings",
 ]

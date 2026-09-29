@@ -23,10 +23,21 @@ const WEEKLY_WARMUP_INTERVAL_MINUTES = 7 * 24 * 60; // 7 days
 function triggerNextBatchInTabs() {
   if (typeof chrome === "undefined" || !chrome.tabs) return;
   chrome.tabs.query({}, (tabs) => {
-    (tabs || []).forEach(tab => {
-      if (tab.url && tab.url.includes("/mynetwork/invite-connect/connections/")) {
-        chrome.tabs.sendMessage(tab.id, { action: "RUN_NEXT_BATCH" }, () => {
-          if (chrome.runtime.lastError) {}
+    (tabs || []).forEach((tab) => {
+      const url = tab.url || "";
+
+      const isConnections =
+        url.includes("/mynetwork/invite-connect/connections/");
+
+      const isPeopleSearch =
+        url.includes("/search/results/people") &&
+        (url.includes("network=%5B%22F%22%5D") || url.includes("network=[\"F\"]") || url.includes("network=%5b%22F%22%5d"));
+
+      if (isConnections || isPeopleSearch) {
+        chrome.tabs.sendMessage(tab.id, {
+          action: "RUN_NEXT_BATCH"
+        }, () => {
+          if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.lastError) {}
         });
       }
     });
@@ -264,12 +275,17 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
     if (!msgAction) return false;
 
     if (msgAction === "SYNC_AGAIN" || msgAction === "syncAgain" || msgAction === "NAVIGATE_AND_RESUME_SYNC") {
-      const targetUrl = message.url || "https://www.linkedin.com/mynetwork/invite-connect/connections/";
+      const targetUrl = message.url || "https://www.linkedin.com/search/results/people/?origin=MEMBER_PROFILE_CANNED_SEARCH&network=%5B%22F%22%5D";
       if (typeof chrome !== "undefined" && chrome.tabs) {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
           const currentTab = tabs && tabs[0];
           if (currentTab) {
-            if (!currentTab.url || !currentTab.url.includes("/mynetwork/invite-connect/connections/")) {
+            const isConnTab = currentTab.url && (
+              currentTab.url.includes("/search/results/people") ||
+              currentTab.url.includes("/mynetwork/invite-connect/connections/") ||
+              currentTab.url.includes("connections.html")
+            );
+            if (!isConnTab) {
               chrome.tabs.update(currentTab.id, { url: targetUrl });
             } else {
               chrome.tabs.sendMessage(currentTab.id, { action: "SYNC_AGAIN" }, () => {});
@@ -313,7 +329,7 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
     }
 
     if (msgAction === "RESUME_EXTRACTION_SESSION" || msgAction === "resumeExtractionSession" || msgAction === "NAVIGATE_AND_RESUME_SYNC") {
-      const targetUrl = message.url || "https://www.linkedin.com/mynetwork/invite-connect/connections/";
+      const targetUrl = message.url || "https://www.linkedin.com/search/results/people/?origin=MEMBER_PROFILE_CANNED_SEARCH&network=%5B%22F%22%5D";
       (async () => {
         let session = await getStoredSession();
         if (session) {
@@ -324,7 +340,12 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
           chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             const currentTab = tabs && tabs[0];
             if (currentTab) {
-              if (!currentTab.url || !currentTab.url.includes("/mynetwork/invite-connect/connections/")) {
+              const isConnTab = currentTab.url && (
+                currentTab.url.includes("/search/results/people") ||
+                currentTab.url.includes("/mynetwork/invite-connect/connections/") ||
+                currentTab.url.includes("connections.html")
+              );
+              if (!isConnTab) {
                 chrome.tabs.update(currentTab.id, { url: targetUrl });
               } else {
                 chrome.tabs.sendMessage(currentTab.id, { action: "startAutomatedAcquisition" }, () => {});
@@ -575,6 +596,20 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
             console.log("[SYNC] Background received");
             if (!session) {
               session = await getStoredSession();
+            }
+
+            const activeTab = typeof chrome !== "undefined" && chrome.tabs
+              ? await new Promise(resolve => chrome.tabs.query({ active: true, currentWindow: true }, tabs => resolve((tabs || [])[0] || null)))
+              : null;
+            const isPeopleSearchTab = !!(activeTab && activeTab.url && activeTab.url.includes("/search/results/people"));
+            if (isPeopleSearchTab && activeTab.id) {
+              chrome.tabs.sendMessage(activeTab.id, { action: "syncToBackend", force: true }, response => {
+                sendResponse(response || { success: false, error: "People Search tab did not respond to sync." });
+              });
+              return;
+            }
+            if (activeTab && activeTab.id && typeof chrome !== "undefined" && chrome.tabs) {
+              chrome.tabs.sendMessage(activeTab.id, { action: "SYNC_AGAIN", type: "SYNC_AGAIN" }, () => {});
             }
 
             try {

@@ -1,5 +1,7 @@
 const connectionStore = new Map();
 const relationshipEvidenceStore = new Map();
+let visibilityChangeListener = null;
+let scanTimer = null;
 
 
 // =========================================================
@@ -315,26 +317,838 @@ function getPageType() {
   return "linkedin_other";
 }
 
-const CONNECTIONS_LOCKED_PATH = "/mynetwork/invite-connect/connections/";
+const CONNECTIONS_LOCKED_PATH = "/search/results/people/";
+
+function getAcquisitionEngineType() {
+  if (typeof window === "undefined" || !window.location) return null;
+  const path = window.location.pathname;
+
+  // Connections page
+  if (path.includes("/mynetwork/invite-connect/connections")) {
+    return "CONNECTIONS";
+  }
+
+  if (path.includes("/search/results/people")) {
+    return "PEOPLE_SEARCH";
+  }
+
+  return null;
+}
+
+function getSelectedPeopleSearchDegree() {
+  if (typeof window === "undefined" || !window.location) return null;
+  const pathname = window.location.pathname;
+
+  if (!pathname.includes("/search/results/people")) {
+    return null;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  let network = params.get("network") || params.get("facetNetwork") || params.get("networkDegree") || "";
+  try { network = decodeURIComponent(network); } catch (_) {}
+
+  const fullSearch = decodeURIComponent(window.location.search || "");
+
+  if (network.includes('"F"') || network.includes('F') || network.includes('1st') || fullSearch.includes('F') || fullSearch.includes('1st')) return "F";
+  if (network.includes('"S"') || network.includes('S') || network.includes('2nd') || fullSearch.includes('S') || fullSearch.includes('2nd')) return "S";
+  if (network.includes('"O"') || network.includes('O') || network.includes('3rd') || fullSearch.includes('O') || fullSearch.includes('3rd')) return "O";
+
+  return "F";
+}
+
+function isEligiblePeopleSearch() {
+  return window.location.pathname.includes("/search/results/people");
+}
 
 function isApprovedExtractionPage() {
-  if (typeof window === "undefined" || !window.location) return false;
-  const url = window.location.href || "";
-  const path = window.location.pathname || "";
-  const search = window.location.search || "";
-  const isConn = path.includes(CONNECTIONS_LOCKED_PATH) ||
-                 path.includes("/mynetwork/invite-connect/connections") ||
-                 url.includes("/mynetwork/invite-connect/connections") ||
-                 url.includes("connections.html");
-  const isFirstDegreeSearch = path.includes("/search/results/people/") &&
-    (search.includes('network=%5B%22F%22%5D') || search.includes('network=["F"]') || search.includes('network=%5B%22F%22') || search.includes('network=["F"'));
-  return isConn || isFirstDegreeSearch;
+  return (isEligiblePeopleSearch() && !!getSelectedPeopleSearchDegree()) || getAcquisitionEngineType() === "CONNECTIONS";
+}
+
+function isPeopleSearchDegreeValid(expectedDegree = null) {
+  if (getAcquisitionEngineType() !== "PEOPLE_SEARCH") return true;
+  const selectedDegree = getSelectedPeopleSearchDegree();
+  return !!selectedDegree && (!expectedDegree || selectedDegree === expectedDegree);
 }
 
 function isConnectionsPage() {
   return isApprovedExtractionPage();
 }
 
+function findPaginationNextButton() {
+  if (typeof document === "undefined") return null;
+
+  const paginationContainer = document.querySelector('.artdeco-pagination, nav[aria-label*="pagination" i], [class*="pagination"]');
+  try {
+    if (paginationContainer && typeof paginationContainer.scrollIntoView === "function") {
+      paginationContainer.scrollIntoView({ block: "end", behavior: "smooth" });
+    }
+  } catch (_) {}
+
+  const selectors = [
+    'button.artdeco-pagination__button--next',
+    'a.artdeco-pagination__button--next',
+    'button[aria-label*="Next"]',
+    'button[aria-label*="next"]',
+    'a[aria-label*="Next"]',
+    'a[aria-label*="next"]',
+    '.artdeco-pagination__button--next button',
+    '.artdeco-pagination__button--next a',
+    'button[aria-label="Next"]',
+    'a[aria-label="Next"]',
+    '[aria-label*="Next page"]',
+    'button:has(svg[data-test-icon*="chevron-right"])',
+    'a:has(svg[data-test-icon*="chevron-right"])',
+    '.artdeco-pagination button:has(svg[data-test-icon*="chevron-right"])',
+    '.artdeco-pagination a:has(svg[data-test-icon*="chevron-right"])'
+  ];
+
+  for (const sel of selectors) {
+    try {
+      const el = document.querySelector(sel);
+      if (el) {
+        const isDisabled = el.disabled === true ||
+                           el.hasAttribute("disabled") ||
+                           el.getAttribute("aria-disabled") === "true" ||
+                           (el.classList && typeof el.classList.contains === "function" && el.classList.contains("artdeco-button--disabled")) ||
+                           (el.classList && typeof el.classList.contains === "function" && el.classList.contains("disabled")) ||
+                           el.getAttribute("disabled") === "disabled";
+        if (!isDisabled) {
+          return el;
+        }
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+function waitForNewPageRender({
+  oldUrl,
+  oldFirstProfileUrl,
+  oldPageNum,
+  shouldCancel = () => false,
+  timeoutMs = 12000
+}) {
+  timeoutMs = Math.min(timeoutMs, 12000);
+  const oldPageParam = new URL(oldUrl, location.origin).searchParams.get("page");
+  const initialVisibleProfileUrl = getPeopleSearchProfileUrls()[0] || null;
+  console.log("[WarmGraph][PeopleSearch] waitForNewPageRender started", {
+    oldUrl, oldFirstProfileUrl, oldPageNum, timeoutMs
+  });
+  return new Promise(resolve => {
+    const started = Date.now();
+
+    function resolveTrue() {
+      cleanup();
+      console.log("[WarmGraph] Page render detected", { url: location.href });
+      return resolve({ navigated: true });
+    }
+
+    const check = () => {
+      if (shouldCancel()) {
+        cleanup();
+        return resolve(false);
+      }
+      const currentPageParam = new URL(location.href).searchParams.get("page");
+      if (currentPageParam && oldPageParam && currentPageParam !== oldPageParam) {
+        console.log("[WarmGraph][PeopleSearch] waitForNewPageRender resolved: URL page param changed", { oldUrl, url: location.href });
+        return resolveTrue();
+      }
+      if (location.href !== oldUrl) {
+        console.log("[WarmGraph][PeopleSearch] waitForNewPageRender resolved: URL changed", { oldUrl, url: location.href });
+        return resolveTrue();
+      }
+
+      const first = getPeopleSearchProfileUrls()[0] || null;
+
+      if (first && first !== initialVisibleProfileUrl) {
+        console.log("[WarmGraph][PeopleSearch] waitForNewPageRender resolved: first profile changed", { oldFirstProfileUrl: initialVisibleProfileUrl || oldFirstProfileUrl, first, url: location.href });
+        return resolveTrue();
+      }
+
+      const page = extractPaginationStateFromDom().currentPage;
+
+      if (page !== oldPageNum) {
+        console.log("[WarmGraph][PeopleSearch] waitForNewPageRender resolved: page number changed", { oldPageNum, page, url: location.href });
+        return resolveTrue();
+      }
+
+      if (Date.now() - started > timeoutMs) {
+        cleanup();
+        console.warn("[WarmGraph][PeopleSearch] waitForNewPageRender timed out", { oldUrl, url: location.href, oldFirstProfileUrl, oldPageNum });
+        return resolve(false);
+      }
+    };
+
+    const observer = new MutationObserver(check);
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    console.log("[WarmGraph] Page render observer created", { url: location.href });
+
+    const interval = setInterval(check, 150);
+
+    function cleanup() {
+      observer.disconnect();
+      clearInterval(interval);
+      console.log("[WarmGraph] Page render observer cleaned up", { url: location.href });
+    }
+
+    check();
+  });
+}
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+function getHumanActionDelayMs() {
+  return random(2000, 5000);
+}
+
+async function waitHumanActionDelay(action) {
+  const delayMs = getHumanActionDelayMs();
+  console.log("[WarmGraph] Human action delay", { action, delayMs });
+  await sleep(delayMs);
+}
+
+function random(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function waitUntil(conditionFn, timeoutMs = 10000, intervalMs = 200) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const timer = setInterval(() => {
+      if (conditionFn()) {
+        clearInterval(timer);
+        resolve(true);
+      } else if (Date.now() - start >= timeoutMs) {
+        clearInterval(timer);
+        resolve(false);
+      }
+    }, intervalMs);
+  });
+}
+
+async function goToNextPeoplePage() {
+  const next =
+    findPaginationNextButton() ||
+    document.querySelector('button[aria-label*="Next"]:not([disabled])') ||
+    document.querySelector('a[aria-label*="Next"]:not([disabled])');
+
+  if (!next) return false;
+
+  const isDisabled = next.disabled === true ||
+                     next.hasAttribute("disabled") ||
+                     next.getAttribute("aria-disabled") === "true" ||
+                     (next.classList && typeof next.classList.contains === "function" && (next.classList.contains("artdeco-button--disabled") || next.classList.contains("disabled")));
+
+  if (isDisabled) return false;
+
+  const firstProfile =
+    document.querySelector('a[href*="/in/"]')?.href;
+
+  window.__wgPreviousProfile = firstProfile;
+
+  if (typeof next.scrollIntoView === "function") {
+    next.scrollIntoView({
+      behavior: "smooth",
+      block: "center"
+    });
+  }
+
+  await waitHumanActionDelay("Connections pagination click");
+
+  if (typeof next.click === "function") {
+    next.click();
+  } else if (typeof next.dispatchEvent === "function") {
+    next.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+  }
+
+  return true;
+}
+
+async function waitForPeoplePageLoad() {
+  const previous = window.__wgPreviousProfile;
+  const start = Date.now();
+
+  while (Date.now() - start < 12000) {
+    const current = document.querySelector('a[href*="/in/"]')?.href;
+
+    if (current && current !== previous) {
+      await sleep(800);
+      return;
+    }
+
+    await sleep(250);
+  }
+
+  console.warn("Next page load timeout reached, continuing extraction.");
+}
+
+async function navigateToNextPageAndWait(session) {
+  const currentPagState = extractPaginationStateFromDom();
+  const currentPageNum = currentPagState ? currentPagState.currentPage : (session ? (session.pageCount || 1) : 1);
+  const nextPageNum = currentPageNum + 1;
+  const navigatingLabel = `Page ${currentPageNum} Complete`;
+
+  if (session) {
+    session.state = "navigating";
+    session.isNavigating = true;
+    session.navigatingLabel = navigatingLabel;
+    session.statusMessage = `➡ Navigating to Page ${nextPageNum}...`;
+    session.checkpointSessionSync();
+  }
+
+  const moved = await goToNextPeoplePage();
+  if (!moved) return false;
+
+  await waitForPeoplePageLoad();
+
+  if (session) {
+    session.isNavigating = false;
+    session.navigatingLabel = null;
+    const newPagState = extractPaginationStateFromDom();
+    if (newPagState && newPagState.currentPage) {
+      session.pageCount = newPagState.currentPage;
+    } else {
+      session.pageCount = nextPageNum;
+    }
+    session.state = "acquiring";
+    session.statusMessage = "Auto Extracting";
+    session.checkpointSessionSync();
+  }
+
+  return true;
+}
+
+function getPeopleSearchProfileUrls() {
+  const selectors = [
+    ".search-results-container li",
+    "li.reusable-search__result-container",
+    ".reusable-search__result-container",
+    "ul.reusable-search__entity-result-list > li",
+    ".search-results-container .entity-result",
+    "main li",
+    ".scaffold-layout__main li"
+  ];
+  const cards = document.querySelectorAll ? document.querySelectorAll(selectors.join(",")) : [];
+  const urls = [];
+  const seen = new Set();
+
+  for (const card of cards) {
+    const anchors = card.querySelectorAll ? card.querySelectorAll('a[href*="/in/"]') : [];
+    for (const anchor of anchors) {
+      const profileUrl = normalizeProfileUrl(anchor.href);
+      if (profileUrl && !seen.has(profileUrl)) {
+        seen.add(profileUrl);
+        urls.push(profileUrl);
+        break;
+      }
+    }
+  }
+
+  if (urls.length === 0 && typeof document !== "undefined") {
+    const anchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
+    for (const anchor of anchors) {
+      const profileUrl = normalizeProfileUrl(anchor.href);
+      if (profileUrl && !seen.has(profileUrl)) {
+        seen.add(profileUrl);
+        urls.push(profileUrl);
+      }
+    }
+  }
+
+  return urls;
+}
+
+async function waitForPeopleCards(timeout = 8000) {
+  const start = Date.now();
+  const timeoutMs = Math.min(timeout, 8000);
+  const getCards = () => {
+    try {
+      return document.querySelectorAll(".search-results-container li, li.reusable-search__result-container");
+    } catch (_) {
+      return [];
+    }
+  };
+
+  let cards = getCards();
+  try {
+    while (Date.now() - start < timeoutMs) {
+      if (cards.length > 0) return cards;
+      await sleep(200);
+      cards = getCards();
+    }
+  } catch (_) {}
+
+  return getCards();
+}
+
+async function waitForPeopleResultCards(timeoutMs = 10000) {
+  const start = Date.now();
+  const targetMinCards = 8;
+  const selectors = [
+    ".search-results-container li",
+    "li.reusable-search__result-container",
+    ".reusable-search__result-container",
+    "ul.reusable-search__entity-result-list > li",
+    ".search-results-container .entity-result",
+    "main li",
+    ".scaffold-layout__main li"
+  ];
+
+  const queryCards = () => {
+    try {
+      const els = document.querySelectorAll(selectors.join(","));
+      return Array.from(els).filter(el => el.querySelector && el.querySelector('a[href*="/in/"]'));
+    } catch (_) {
+      return [];
+    }
+  };
+
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    let observer = null;
+    let lastCount = 0;
+    let stableRounds = 0;
+
+    const cleanup = () => {
+      if (timer) clearInterval(timer);
+      if (observer) observer.disconnect();
+    };
+
+    const check = () => {
+      const cards = queryCards();
+      const count = cards.length;
+
+      if (count >= targetMinCards) {
+        cleanup();
+        return resolve(cards);
+      }
+
+      if (count > 0) {
+        if (count === lastCount) {
+          stableRounds++;
+          if (stableRounds >= 4) {
+            cleanup();
+            return resolve(cards);
+          }
+        } else {
+          lastCount = count;
+          stableRounds = 0;
+        }
+      }
+
+      if (Date.now() - start >= timeoutMs) {
+        cleanup();
+        if (count > 0) {
+          return resolve(cards);
+        }
+        return reject(new Error("Timed out waiting for People Search cards (10s)"));
+      }
+    };
+
+    try {
+      observer = new MutationObserver(check);
+      observer.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true
+      });
+    } catch (_) {}
+
+    timer = setInterval(check, 150);
+    check();
+  });
+}
+
+async function waitForConnectionCardsToStabilize(timeout = 8000) {
+  const started = Date.now();
+  let previousCount = -1;
+  let stableSince = 0;
+
+  while (Date.now() - started < timeout) {
+    const main = document.querySelector("main") || document;
+    const count = Array.from(main.querySelectorAll("li"))
+      .filter(item => item.querySelector('a[href*="/in/"]')).length;
+    if (count > 0) {
+      if (count !== previousCount) {
+        previousCount = count;
+        stableSince = Date.now();
+      } else if (Date.now() - stableSince >= 900) {
+        console.log("[WarmGraph] Connection cards stable", { count, stableMs: Date.now() - stableSince });
+        return true;
+      }
+    }
+    await sleep(300);
+  }
+
+  console.warn("[WarmGraph] Connection cards did not stabilize", { count: Math.max(0, previousCount), timeoutMs: timeout });
+  return false;
+}
+
+function debugPaginationRoots() {
+  const roots = [
+    ...document.querySelectorAll("nav"),
+    ...document.querySelectorAll('[class*="pagination"]'),
+    ...document.querySelectorAll('[class*="Paginator"]'),
+    ...document.querySelectorAll(".artdeco-pagination")
+  ];
+
+  console.log("[PAGINATION CANDIDATES]",
+    roots.map((el, i) => ({
+      i,
+      tag: el.tagName,
+      cls: el.className,
+      aria: el.getAttribute("aria-label"),
+      text: (el.textContent || "").replace(/\s+/g, " ").trim().slice(0,120)
+    }))
+  );
+
+  return null;
+}
+
+function getPeopleSearchPaginationRoot() {
+  const elements = Array.from(
+    document.querySelectorAll("div, section, footer, nav, ul, ol, [class*='pagination' i]")
+  );
+  const matching = [];
+
+  for (const el of elements) {
+    const text = el.textContent || "";
+    if (!/next/i.test(text)) continue;
+
+    const pageButtons = Array.from(
+      el.querySelectorAll("button, a, [role='button']")
+    ).filter(b => /^\d+$/.test((b.textContent || "").trim()));
+
+    if (pageButtons.length >= 2) {
+      matching.push({ el, childCount: el.querySelectorAll("*").length });
+    }
+  }
+
+  console.log("[PAGER CANDIDATE COUNT]", matching.length);
+
+  if (matching.length === 0) return null;
+
+  matching.sort((a, b) => a.childCount - b.childCount);
+  const root = matching[0].el;
+
+  console.log("[PAGER MATCH]", {
+    tag: root?.tagName,
+    cls: root?.className,
+    id: root?.id,
+    role: root?.getAttribute("role"),
+    aria: root?.getAttribute("aria-label"),
+    html: root?.outerHTML?.slice(0, 500)
+  });
+
+  return root;
+}
+
+function findEnabledPeopleSearchNextButton() {
+  const root = getPeopleSearchPaginationRoot();
+  if (!root) return null;
+
+  const candidates = root.querySelectorAll("button, a, [role='button']");
+  for (const candidate of candidates) {
+    const text = (candidate.textContent || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+    const label = (candidate.getAttribute("aria-label") || "")
+      .toLowerCase();
+    const hasRightChevron =
+      candidate.querySelector('svg use[href*="chevron-right"]') ||
+      candidate.querySelector('svg use[xlink\\:href*="chevron-right"]') ||
+      candidate.querySelector('svg[data-test-icon*="chevron-right"]') ||
+      candidate.querySelector('svg[data-test-icon*="arrow-right"]');
+    const isNext =
+      label.includes("next") ||
+      text.includes("next") ||
+      text.includes("\u203a") ||
+      text.includes(">") ||
+      !!hasRightChevron ||
+      (candidate.classList && candidate.classList.contains("artdeco-pagination__button--next")) ||
+      !!candidate.closest?.(".artdeco-pagination__button--next");
+
+    let disabled = candidate.disabled === true ||
+      candidate.getAttribute("aria-disabled") === "true" ||
+      candidate.hasAttribute("disabled") ||
+      (candidate.classList && typeof candidate.classList.contains === "function" && (
+        candidate.classList.contains("artdeco-button--disabled") ||
+        candidate.classList.contains("artdeco-pagination__button--disabled") ||
+        candidate.classList.contains("disabled")
+      )) ||
+      !!candidate.closest?.(".artdeco-button--disabled,.artdeco-pagination__button--disabled");
+
+    let ancestor = candidate.parentElement;
+    while (!disabled && ancestor && ancestor !== root) {
+      const classes = ancestor.classList;
+      disabled = ancestor.disabled === true ||
+        ancestor.getAttribute("aria-disabled") === "true" ||
+        ancestor.hasAttribute("disabled") ||
+        !!(classes && [
+          "artdeco-pagination__button--disabled",
+          "artdeco-button--disabled",
+          "artdeco-pagination__indicator--disabled",
+          "disabled"
+        ].some(className => classes.contains(className)));
+      ancestor = ancestor.parentElement;
+    }
+
+    if (isNext && !disabled) {
+      console.log("[NEXT FOUND]", {
+        text: (candidate.textContent || "").trim(),
+        aria: candidate.getAttribute("aria-label")
+      });
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function extractPaginationStateFromDom() {
+  const result = {
+    currentPage: 1,
+    totalPages: 1,
+    hasNext: false
+  };
+
+  debugPaginationRoots();
+  const root = getPeopleSearchPaginationRoot();
+
+  console.log("[PAGINATION ROOT]", {
+    found: !!root,
+    text: root?.textContent?.replace(/\s+/g, " ").trim()
+  });
+
+  if (!root) {
+    console.log("[WarmGraph] pageState", result);
+    return result;
+  }
+
+  const active =
+    root.querySelector('[aria-current="true"]') ||
+    root.querySelector(".artdeco-pagination__indicator--number.active");
+
+  if (active) {
+    const n = parseInt(active.textContent.trim(), 10);
+    if (!Number.isNaN(n)) result.currentPage = n;
+  }
+
+  const nums = [...root.querySelectorAll("button, a")]
+    .map(el => parseInt(el.textContent.trim(), 10))
+    .filter(Number.isFinite);
+
+  if (nums.length) {
+    result.totalPages = Math.max(...nums);
+  } else {
+    result.totalPages = result.currentPage;
+  }
+
+  result.hasNext = !!findEnabledPeopleSearchNextButton();
+  console.log("[WarmGraph] pageState", result);
+  return result;
+}
+
+async function autoAdvanceToNextPage(session) {
+  let next = findEnabledPeopleSearchNextButton();
+  if (!next) {
+    console.warn("[WarmGraph][PeopleSearch] autoAdvance returned: no enabled Next button", { url: location.href, pageState: extractPaginationStateFromDom() });
+    return false;
+  }
+
+  const currentPagState = extractPaginationStateFromDom();
+  const currentPageNum =
+    currentPagState?.currentPage || session?.pageCount || 1;
+
+  const nextPageNum = currentPageNum + 1;
+
+  if (session) {
+    console.log("[WarmGraph][PeopleSearch] state transition: acquiring -> navigating", { currentPageNum, nextPageNum, sessionState: session.state, url: location.href });
+    session.pageExtractionComplete = false;
+    session.state = "navigating";
+    session.isNavigating = true;
+    session.navigatingLabel = `Page ${currentPageNum} → Page ${nextPageNum}`;
+    session.statusMessage = "Navigating...";
+    session.checkpointSessionSync();
+  }
+
+  const oldUrl = location.href;
+  const oldFirstProfile =
+    document.querySelector('a[href*="/in/"]')?.href || null;
+
+  try {
+    console.log("[WarmGraph][PeopleSearch] autoAdvance clicking Next", { currentPageNum, nextPageNum, url: location.href });
+
+    const scrollTarget = next.closest?.("button, a") || next;
+    try {
+      if (typeof scrollTarget.scrollIntoView === "function") {
+        scrollTarget.scrollIntoView({
+          block: "center",
+          behavior: "smooth"
+        });
+      }
+    } catch (_) {}
+
+    await sleep(400);
+    if (session && session.finishRequested) return false;
+
+    // LinkedIn may replace pagination while the action delay is running.
+    next = findEnabledPeopleSearchNextButton();
+    if (!next) throw new Error("Next button unavailable after pagination re-render");
+
+    const clickTarget = next.closest?.("button, a") || next;
+    const targetHref = clickTarget.getAttribute?.("href") || clickTarget.closest?.("a")?.getAttribute?.("href");
+
+    console.log("[WarmGraph][CLICK NEXT]", {
+      page: currentPageNum,
+      nextPage: nextPageNum,
+      targetTag: clickTarget.tagName,
+      targetHref,
+      href: location.href
+    });
+
+    try {
+      clickTarget.focus?.();
+    } catch (_) {}
+
+    if (typeof clickTarget.click === "function") {
+      clickTarget.click();
+    }
+
+    try {
+      clickTarget.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+      clickTarget.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+      clickTarget.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, view: window }));
+      clickTarget.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+      clickTarget.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+    } catch (_) {}
+
+    console.log("[WarmGraph][PeopleSearch] autoAdvance: click returned", {
+      page: currentPageNum,
+      expectedNextPage: nextPageNum,
+      url: location.href
+    });
+
+    const navigated = await waitForNewPageRender({
+      oldUrl,
+      oldFirstProfileUrl: oldFirstProfile,
+      oldPageNum: currentPageNum,
+      shouldCancel: () => !!(session && session.finishRequested),
+      timeoutMs: 12000
+    });
+    console.log("[WarmGraph][PeopleSearch] autoAdvance: waitForNewPageRender resolved", {
+      navigated,
+      page: currentPageNum,
+      url: location.href,
+      engineType: getAcquisitionEngineType()
+    });
+
+    if (!navigated && session && session.finishRequested) return false;
+    if (!navigated) {
+      throw new Error("SPA navigation timeout");
+    }
+
+    await waitForPeopleCards();
+    console.log("[WarmGraph][ARRIVED]", {
+      page: extractPaginationStateFromDom().currentPage,
+      url: location.href
+    });
+
+    console.log("[WarmGraph] Now on:", location.href);
+
+  } catch (err) {
+    console.error("[WarmGraph] Pagination failed:", err);
+
+    if (session) {
+      console.error("[WarmGraph][PeopleSearch] state transition: navigating -> interrupted", { message: err.message, url: location.href });
+      session.state = "interrupted";
+      session.isNavigating = false;
+      session.navigatingLabel = null;
+      session.statusMessage = "Pagination failed";
+      session.checkpointSessionSync();
+    }
+
+    return false;
+  }
+
+  if (session) {
+    console.log("[WarmGraph][PeopleSearch] state transition: navigating -> acquiring", { page: nextPageNum, url: location.href });
+    session.state = "acquiring";
+    session.isNavigating = false;
+    session.navigatingLabel = null;
+    session.statusMessage = "Auto Extracting";
+    session.pageCount = nextPageNum;
+    session.checkpointSessionSync();
+  }
+
+  return true;
+}
+
+function extractPaginationStateFromDom() {
+  const result = {
+    currentPage: 1,
+    totalPages: 1,
+    hasNext: false
+  };
+
+  debugPaginationRoots();
+  const root = getPeopleSearchPaginationRoot();
+
+  console.log("[PAGINATION ROOT]", {
+    found: !!root,
+    text: root?.textContent?.replace(/\s+/g, " ").trim()
+  });
+
+  if (!root) {
+    console.log("[WarmGraph] pageState", result);
+    return result;
+  }
+
+  const active =
+    root.querySelector('[aria-current="true"]') ||
+    root.querySelector(".artdeco-pagination__indicator--number.active");
+
+  if (active) {
+    const n = parseInt(active.textContent.trim(), 10);
+    if (!Number.isNaN(n)) result.currentPage = n;
+  }
+
+  const nums = [...root.querySelectorAll("button, a, [role='button'], .artdeco-pagination__indicator")]
+    .map(el => parseInt(el.textContent.trim(), 10))
+    .filter(Number.isFinite);
+
+  if (nums.length) {
+    result.totalPages = Math.max(...nums);
+  } else {
+    result.totalPages = result.currentPage;
+  }
+
+  result.hasNext = !!findEnabledPeopleSearchNextButton();
+  console.log("[WarmGraph] pageState", result);
+  return result;
+}
+
+async function ensurePaginationVisible() {
+  let lastHeight = 0;
+
+  for (let i = 0; i < 8; i++) {
+    window.scrollTo({
+      top: document.body.scrollHeight,
+      behavior: "smooth"
+    });
+
+    await new Promise(r => setTimeout(r, 700));
+
+    const h = document.body.scrollHeight;
+    if (h === lastHeight) break;
+    lastHeight = h;
+  }
+}
 
 function getCardLines(card) {
   return (card.innerText || "")
@@ -388,7 +1202,11 @@ function removeKnownText(value, knownValues) {
 // =========================================================
 
 function getProfileAnchor(root) {
-  const anchors = root.querySelectorAll ? root.querySelectorAll('a[href*="/in/"]') : [];
+  const rawAnchors = root.querySelectorAll ? root.querySelectorAll('a[href*="/in/"]') : [];
+  const primaryAnchors = Array.from(rawAnchors).filter(
+    a => !a.closest?.('.entity-result__simple-insight, [data-field="mutual-connections"], [class*="mutual"]')
+  );
+  const anchors = primaryAnchors.length > 0 ? primaryAnchors : rawAnchors;
   let mainAnchor = null;
   let profileUrl = null;
 
@@ -980,19 +1798,15 @@ function extractFirstDegreeCard(
   profileAnchor
 ) {
   const text = cleanText(card.innerText);
-  const pageType = getPageType();
-  const isConnectionsPage = (
-    pageType === "linkedin_network" ||
-    (typeof window !== "undefined" && window.location.href.includes("/mynetwork/invite-connect/connections/")) ||
-    (typeof window !== "undefined" && window.location.href.includes("connections.html"))
-  );
+  const isConnPage = isApprovedExtractionPage();
+  const isFirstDegreeSearch = getAcquisitionEngineType() === "PEOPLE_SEARCH" && getSelectedPeopleSearchDegree() === "F";
 
-  // Require "connected" or "1st" degree indicator ONLY if NOT on connections page
-  const hasConnectedIndicator = /connected/i.test(text) || /\b1st\b/i.test(text);
-  if (!isConnectionsPage && !hasConnectedIndicator) {
+  // Require "connected" or "1st" degree indicator ONLY if NOT on approved extraction page
+  const hasConnectedIndicator = /connected/i.test(text) || /\b1st\b/i.test(text) || isFirstDegreeSearch;
+  if (!isConnPage && !hasConnectedIndicator) {
     return null;
   }
-  if (/\b(2nd|3rd\+?)\b/i.test(text) && !hasConnectedIndicator) {
+  if (!isFirstDegreeSearch && /\b(2nd|3rd\+?)\b/i.test(text) && !hasConnectedIndicator && !isConnPage) {
     return null;
   }
 
@@ -1014,6 +1828,17 @@ function extractFirstDegreeCard(
   const headline = headlineCandidates.length > 0 ? headlineCandidates[0] : null;
   const companyRes = resolveCompanyAndRoleType(card, text, headline);
 
+  const locationLine = lines.find((line) =>
+    line !== profileAnchor.name &&
+    line !== headline &&
+    !/connected/i.test(line) &&
+    !/^(message|follow|connect|remove)$/i.test(line) &&
+    !/\b(1st|2nd|3rd\+?)\b/i.test(line) &&
+    /\b[A-Z][A-Za-z0-9\s.-]+,\s*[A-Z][A-Za-z0-9\s.-]+/i.test(line)
+  );
+
+  const mutualText = extractMutualConnectionsText(card, text);
+
   return {
     name: profileAnchor.name,
     profile_url: profileAnchor.profile_url,
@@ -1022,6 +1847,8 @@ function extractFirstDegreeCard(
     headline,
     company: companyRes.company,
     role_type: companyRes.role_type,
+    location: locationLine || null,
+    mutual_info: mutualText || null,
     relationship_type: "KNOWS",
     evidence_type: "connection_card",
     source: "linkedin_dom",
@@ -1209,6 +2036,15 @@ function scanLinkedInPage() {
   let relationshipEvidenceAdded = 0;
   let relationshipEvidenceUpdated = 0;
 
+  if (getAcquisitionEngineType() === "PEOPLE_SEARCH" && !getSelectedPeopleSearchDegree()) {
+    return {
+      first_degree_added: 0,
+      first_degree_updated: 0,
+      relationship_evidence_added: 0,
+      relationship_evidence_updated: 0
+    };
+  }
+
 
   for (
     const anchor of document.querySelectorAll(
@@ -1379,9 +2215,10 @@ function scanAndMaybeSync() {
 // =========================================================
 
 let lastObservedScrollEvent = null;
+let scrollTelemetryListener = null;
 
 if (typeof window !== "undefined") {
-  window.addEventListener("scroll", (e) => {
+  scrollTelemetryListener = (e) => {
     try {
       const target = e.target;
       let desc = "window";
@@ -1396,7 +2233,8 @@ if (typeof window !== "undefined") {
         targetDescription: desc
       };
     } catch (err) {}
-  }, { capture: true, passive: true });
+  };
+  window.addEventListener("scroll", scrollTelemetryListener, { capture: true, passive: true });
 }
 
 function inspectBottomTelemetry(container, loader, preCardCount, postCardCount, preScrollHeight, postScrollHeight, waitMetrics) {
@@ -1501,8 +2339,8 @@ function mergeRecord(existing = {}, fresh = {}) {
   return merged;
 }
 
-const ACQUISITION_MIN_DELAY_MS = 8000;
-const ACQUISITION_MAX_DELAY_MS = 30000;
+const ACQUISITION_MIN_DELAY_MS = 2000;
+const ACQUISITION_MAX_DELAY_MS = 5000;
 
 function getRandomAcquisitionDelayMs() {
   if (typeof window !== "undefined" && window.TEST_ACQUISITION_DELAY_MS !== undefined) {
@@ -1511,22 +2349,65 @@ function getRandomAcquisitionDelayMs() {
   return Math.floor(Math.random() * (ACQUISITION_MAX_DELAY_MS - ACQUISITION_MIN_DELAY_MS + 1)) + ACQUISITION_MIN_DELAY_MS;
 }
 
+async function startAutomaticAcquisition() {
+  const engineType = getAcquisitionEngineType();
+  console.log("[WarmGraph] Engine:", engineType, { pathname: location.pathname, search: location.search });
+  if (!isApprovedExtractionPage()) {
+    console.log("[WarmGraph] Auto-start returned: page is not approved", { engineType, url: location.href });
+    return;
+  }
+
+  if (acquisitionSession.manuallyFinished) {
+    console.log("[WarmGraph] Auto-start skipped: session was manually finished");
+    return;
+  }
+
+  if (acquisitionSession.state === "completed" || acquisitionSession.state === "resting" || acquisitionSession.completionStatus === "complete") {
+    if (engineType === "PEOPLE_SEARCH") {
+      console.log("[WarmGraph] Resetting completed/resting session for fresh People Search crawl");
+      acquisitionSession.reset(true);
+      acquisitionSession.activeDegreeFilter = getSelectedPeopleSearchDegree();
+      acquisitionSession.engineType = "PEOPLE_SEARCH";
+    }
+  }
+
+  if (window.__warmgraphAcquisitionRunning || acquisitionSession.isRunning || acquisitionSession.activeLoopPromise) {
+    console.log("[WarmGraph] Auto-start returned: existing session", {
+      state: acquisitionSession.state,
+      running: !!window.__warmgraphAcquisitionRunning,
+      url: location.href
+    });
+    return;
+  }
+
+  console.log("[WarmGraph] Auto starting extraction", { engineType, url: location.href });
+  return acquisitionSession.start("acquiring");
+}
+
 class ConnectionAcquisitionSession {
   constructor() {
     this.sessionId = `warmgraph_session_${Date.now()}`;
     this.connections = new Map();
     this.relationshipEvidence = new Map();
     this.seenProfiles = new Set();
+    this.hasSavedSession = false;
+    this._hydrationPromise = null;
     this.reset(false);
   }
 
   reset(clearStores = false) {
     this.state = "idle";
+    this.finishRequested = false;
+    this.pauseRequested = false;
+    this.manuallyFinished = false;
+    this.activeDegreeFilter = null;
+    this.pendingDegreeRestart = null;
     if (clearStores) {
       this.sessionId = `warmgraph_session_${Date.now()}`;
       this.connections = new Map();
       this.relationshipEvidence = new Map();
       this.seenProfiles = new Set();
+      this.hasSavedSession = false;
     }
     if (!this.connections) {
       this.connections = new Map();
@@ -1540,6 +2421,9 @@ class ConnectionAcquisitionSession {
     this.lockedPath = CONNECTIONS_LOCKED_PATH;
     this.pausedRemainingMs = null;
     this.pageCount = 0;
+    this.currentPage = 0;
+    this.totalPages = 0;
+    this.pageExtractionComplete = false;
     this.expectedTotal = 0;
     this.isPartial = false;
     this.statusMessage = "";
@@ -1562,7 +2446,10 @@ class ConnectionAcquisitionSession {
 
     // ─── CANONICAL currentSession (Single Source of Truth) ───────────────────
     // content.js is the ONLY writer. overlay.js and popup.js are pure readers.
-    const canonicalTotal = this.totalConnections || status.totalConnections || status.expected_total || 0;
+    const engineType = status.engineType || status.engine_type || getAcquisitionEngineType() || this.engineType || "CONNECTIONS";
+    const canonicalTotal = engineType === "PEOPLE_SEARCH"
+      ? (this.totalConnections ?? 0)
+      : (this.totalConnections || status.totalConnections || status.expected_total || 0);
     let rawExtracted = this.connections ? this.connections.size : (status.extractedConnections || status.collected_count || 0);
     const canonicalStateRaw = status.state || "idle";
     const isCompleteState = canonicalStateRaw === "resting" || canonicalStateRaw === "completed" || this.completionStatus === "complete";
@@ -1588,30 +2475,59 @@ class ConnectionAcquisitionSession {
       ? (canonicalComplete ? 100 : Math.min(99, Math.round((canonicalExtracted / canonicalActual) * 100)))
       : (canonicalExtracted > 0 ? 100 : 0);
 
+    const profileUrlList = Array.from(this.connections.values())
+      .map(c => c.profile_url)
+      .filter(Boolean);
+
+    const pagState = extractPaginationStateFromDom();
+    if (engineType === "PEOPLE_SEARCH" && getAcquisitionEngineType() === "PEOPLE_SEARCH") {
+      this.currentPage = pagState.currentPage || this.currentPage;
+      this.totalPages = Math.max(this.totalPages || 0, pagState.totalPages || 0, this.currentPage || 0);
+    }
+    const currentPage = this.currentPage || pagState.currentPage || this.pageCount || 1;
+    const totalPages = this.totalPages || pagState.totalPages || 1;
+    const pageLabel = engineType === "PEOPLE_SEARCH"
+      ? `Page ${currentPage} of ${totalPages}`
+      : (pagState?.label || (this.pageCount > 0 ? `Page ${this.pageCount}` : ""));
+
     const currentSessionObj = {
       sessionId: this.sessionId,
+      engineType,
+      engine_type: engineType,
       totalConnections: canonicalTotal,
       actualProfiles: canonicalActual,
       extractedConnections: canonicalExtracted,
       importedRecords: this.importedRecords,
       progressPercent: canonicalPct,
       state: canonicalState,
+      degreeFilter: this.activeDegreeFilter || getSelectedPeopleSearchDegree(),
       syncStatus: canonicalComplete ? "synced" : (this.syncStatus || status.sync_status || "idle"),
       lastSyncedAt: canonicalComplete ? (this.lastSyncTimestamp || new Date().toISOString()) : (this.lastSyncTimestamp || null),
       nextBatchAt: canonicalComplete ? null : (status.nextBatchAt || null),
       estimatedRemainingMs: canonicalComplete ? null : (this.estimatedRemainingMs || status.pausedRemainingMs || null),
       lastKnownActualProfiles: canonicalActual,
+      currentPage,
+      totalPages,
+      remainingProfiles: Math.max(0, canonicalActual - canonicalExtracted),
       pausedRemainingMs: canonicalComplete ? null : (status.pausedRemainingMs || null),
       countdownSeconds: canonicalComplete ? 0 : (status.countdown_seconds || 0),
-      statusMessage: canonicalComplete ? "You're all caught up ✨" : (status.status_message || "")
+      statusMessage: canonicalComplete ? "You're all caught up ✨" : (status.status_message || ""),
+      paginationLabel: pageLabel,
+      isNavigating: !!this.isNavigating,
+      navigatingLabel: this.navigatingLabel || null,
+      known_profile_urls: profileUrlList,
+      extracted_count: canonicalExtracted
     };
     // ─────────────────────────────────────────────────────────────────────────
 
     // Legacy acquisition_session kept for backward-compat with background.js handlers
     const sessionObj = {
       sessionId: this.sessionId,
+      engineType,
+      engine_type: engineType,
       lockedPath: status.lockedPath || CONNECTIONS_LOCKED_PATH,
       state: canonicalState,
+      degreeFilter: this.activeDegreeFilter || getSelectedPeopleSearchDegree(),
       expectedTotal: canonicalTotal,
       totalConnections: canonicalTotal,
       actualProfiles: canonicalActual,
@@ -1645,6 +2561,9 @@ class ConnectionAcquisitionSession {
       lastSyncedAt: this.lastSyncTimestamp || null,
       last_synced_at: this.lastSyncTimestamp || null,
       telemetry: status.telemetry,
+      paginationLabel: pageLabel,
+      known_profile_urls: profileUrlList,
+      extracted_count: canonicalExtracted,
       lastUpdated: new Date().toISOString()
     };
 
@@ -1653,6 +2572,9 @@ class ConnectionAcquisitionSession {
         const storagePayload = {
           acquisition_session: sessionObj,
           currentSession: currentSessionObj,
+          last_synced_profile_urls: profileUrlList,
+          known_profile_urls: profileUrlList,
+          extracted_count: canonicalExtracted,
           warmgraph_staging_graph: {
             sessionId: this.sessionId,
             connections: Array.from(this.connections.values()),
@@ -1687,6 +2609,16 @@ class ConnectionAcquisitionSession {
     if (typeof window !== "undefined" && typeof window.updateWarmGraphOverlay === "function") {
       window.updateWarmGraphOverlay(currentSessionObj);
     }
+    this.syncFinishButtonVisibility(currentSessionObj);
+  }
+
+  syncFinishButtonVisibility(status = this.getStatus()) {
+    if (typeof document === "undefined" || getAcquisitionEngineType() !== "PEOPLE_SEARCH") return;
+    const finishButton = document.querySelector("#warmgraph-btn-finish-sync");
+    if (!finishButton) return;
+    const isCompleted = status.state === "completed" || status.state === "resting";
+    const hasNext = extractPaginationStateFromDom().hasNext;
+    finishButton.style.display = !isCompleted && this.pageExtractionComplete && !hasNext ? "flex" : "none";
   }
 
   checkpointSession() {
@@ -1695,6 +2627,7 @@ class ConnectionAcquisitionSession {
     if (typeof window !== "undefined" && typeof window.updateWarmGraphOverlay === "function") {
       window.updateWarmGraphOverlay(status);
     }
+    this.syncFinishButtonVisibility(status);
     const payload = {
       action: "UPDATE_SESSION",
       sessionId: this.sessionId,
@@ -1729,21 +2662,28 @@ class ConnectionAcquisitionSession {
   }
 
   async initOrHydrateSession() {
-    return new Promise((resolve) => {
-      const applySession = (session, canonical) => {
+    if (this._hydrationPromise) return this._hydrationPromise;
+    this._hydrationPromise = new Promise((resolve) => {
+      const applySession = (session, canonical, savedGraphs = {}) => {
         // canonical = the currentSession SSOT object (written by checkpointSessionSync)
         // session   = the legacy acquisition_session (has connection payloads)
-        const merged = canonical || session;
-        if (merged && ["acquiring", "waiting", "paused", "interrupted", "completed", "resting"].includes(merged.state)) {
+        const savedStates = ["acquiring", "collecting", "resumed", "waiting", "waiting_for_content", "settling", "navigating", "paused", "interrupted", "completed", "resting"];
+        const merged = (canonical && savedStates.includes(canonical.state))
+          ? canonical
+          : ((session && savedStates.includes(session.state)) ? session : (canonical || session));
+        if (merged && savedStates.includes(merged.state)) {
+          this.hasSavedSession = true;
           if (merged.sessionId) this.sessionId = merged.sessionId;
+          this.engineType = merged.engineType || merged.engine_type || this.engineType;
+          this.activeDegreeFilter = merged.degreeFilter || this.activeDegreeFilter;
           if (merged.lockedPath) this.lockedPath = merged.lockedPath;
 
           // ── Restore FROZEN totals from canonical SSOT ──────────────────────
           // Never derive actualProfiles from extractedConnections here.
-          if (canonical && canonical.totalConnections) {
-            this.totalConnections = canonical.totalConnections;
-            this.expectedTotal = canonical.totalConnections;
-            this.actualProfiles = canonical.totalConnections;
+          if (merged.totalConnections) {
+            this.totalConnections = merged.totalConnections;
+            this.expectedTotal = merged.totalConnections;
+            this.actualProfiles = merged.totalConnections;
           } else if (session) {
             const t = session.totalConnections || session.expectedTotal || 0;
             if (t > 0) {
@@ -1751,6 +2691,14 @@ class ConnectionAcquisitionSession {
               this.expectedTotal = t;
               this.actualProfiles = t;
             }
+          }
+          if (merged) {
+            const savedActual = merged.lastKnownActualProfiles || merged.actualProfiles || 0;
+            if (savedActual > 0 && (!this.actualProfiles || this.actualProfiles < savedActual)) {
+              this.actualProfiles = savedActual;
+            }
+            if (merged.currentPage) this.currentPage = merged.currentPage;
+            if (merged.totalPages) this.totalPages = merged.totalPages;
           }
           // ───────────────────────────────────────────────────────────────────
 
@@ -1761,7 +2709,8 @@ class ConnectionAcquisitionSession {
           if (merged.countdownSeconds !== undefined) this.countdownSeconds = merged.countdownSeconds;
 
           // Restore connection payload from acquisition_session (has actual arrays)
-          const src = session || merged;
+          const sessionMatches = session && (!session.sessionId || !merged.sessionId || session.sessionId === merged.sessionId);
+          const src = sessionMatches ? session : merged;
           if (src.pageCount) this.pageCount = src.pageCount;
           if (src.completionStatus) this.completionStatus = src.completionStatus;
           if (src.isPartial !== undefined) this.isPartial = src.isPartial;
@@ -1770,7 +2719,9 @@ class ConnectionAcquisitionSession {
           if (src.nextSyncDelay) this.nextSyncDelay = src.nextSyncDelay;
           if (src.nextSyncAt) this.nextSyncAt = src.nextSyncAt;
 
-          const storedConnections = src.collectedConnections || src.connections || [];
+          const sessionConnections = src.collectedConnections || src.connections || [];
+          const graphConnections = savedGraphs.warmgraph_staging_graph?.connections || savedGraphs.warmgraph_active_graph?.connections || [];
+          const storedConnections = sessionConnections.length ? sessionConnections : graphConnections;
           storedConnections.forEach(c => {
             const key = this.getDeduplicationKey(c);
             if (key) {
@@ -1821,10 +2772,26 @@ class ConnectionAcquisitionSession {
 
       try {
         if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-          chrome.storage.local.get(["currentSession", "acquisition_session"], (res) => {
+          chrome.storage.local.get(["currentSession", "acquisition_session", "last_synced_profile_urls", "warmgraph_sync_journal", "warmgraph_staging_graph", "warmgraph_active_graph"], (res) => {
+            if (res && res.last_synced_profile_urls && Array.isArray(res.last_synced_profile_urls)) {
+              if (!this.seenProfiles) this.seenProfiles = new Set();
+              res.last_synced_profile_urls.forEach(url => {
+                const norm = normalizeProfileUrl(url);
+                if (norm) this.seenProfiles.add(`url:${norm}`);
+              });
+            }
+            const journalSeenUrls = res && res.warmgraph_sync_journal && res.warmgraph_sync_journal.seenUrls;
+            if (Array.isArray(journalSeenUrls)) {
+              journalSeenUrls.forEach(value => {
+                const rawUrl = typeof value === "string" && value.startsWith("url:") ? value.slice(4) : value;
+                const norm = normalizeProfileUrl(rawUrl);
+                if (norm) this.seenProfiles.add(`url:${norm}`);
+              });
+            }
             applySession(
               res ? res.acquisition_session : null,
-              res ? res.currentSession : null
+              res ? res.currentSession : null,
+              res || {}
             );
           });
         } else {
@@ -1834,6 +2801,66 @@ class ConnectionAcquisitionSession {
         applySession(null, null);
       }
     });
+    return this._hydrationPromise;
+  }
+
+  async resume() {
+    await this.initOrHydrateSession();
+    if (!this.hasSavedSession) return this.start("acquiring");
+    if (["completed", "resting"].includes(this.state)) return this.getStatus();
+    if (this.activeLoopPromise || this.isRunning || (typeof window !== "undefined" && window.__warmgraphAcquisitionRunning)) {
+      return this.getStatus();
+    }
+    this.state = "acquiring";
+    this.shouldCancel = false;
+    return this.start("acquiring");
+  }
+
+  async finishAndSync() {
+    this.finishRequested = true;
+    this.pauseRequested = false;
+    this.manuallyFinished = true;
+    this.shouldCancel = true;
+    if (this.nextBatchResolver) this.nextBatchResolver();
+    if (this.activeLoopPromise) {
+      await this.activeLoopPromise;
+      return this.getStatus();
+    }
+    await this.completeAndSync();
+    return this.getStatus();
+  }
+
+  pause() {
+    this.pauseRequested = true;
+    this.finishRequested = false;
+    this.shouldCancel = true;
+    if (this.nextBatchResolver) this.nextBatchResolver();
+    if (!this.activeLoopPromise) {
+      this.state = "paused";
+      this.statusMessage = "Progress saved. Continue when you're ready.";
+      this.checkpointSessionSync();
+    }
+  }
+
+  async completeAndSync() {
+    this.finishRequested = false;
+    this.pauseRequested = false;
+    this.manuallyFinished = true;
+    this.state = "completed";
+    this.completionStatus = "complete";
+    this.isPartial = false;
+    this.syncStatus = "idle";
+    this.statusMessage = "Workspace Up To Date";
+    this.nextBatchAt = null;
+    this.nextSyncDelay = 0;
+    this.countdownSeconds = 0;
+    this.pausedRemainingMs = null;
+    this.estimatedRemainingMs = null;
+    this.actualProfiles = this.connections.size;
+    this.totalConnections = this.connections.size;
+    this.expectedTotal = this.connections.size;
+    await this.checkpointSession();
+    await this.autoSyncToBackend();
   }
 
   getDeduplicationKey(record) {
@@ -1849,12 +2876,21 @@ class ConnectionAcquisitionSession {
     return `name:${normName}|${fallbackUrl}`;
   }
 
-  scanCurrentPageForUnseen() {
+  async scanCurrentPageForUnseen() {
     if (!this.seenProfiles) this.seenProfiles = new Set();
+    if (getAcquisitionEngineType() === "PEOPLE_SEARCH" && !getSelectedPeopleSearchDegree()) {
+      this.state = "paused";
+      this.statusMessage = "Degree filter removed";
+      this.checkpointSessionSync();
+      return { newProfilesCount: 0, duplicatesSkippedCount: 0, totalVisibleCards: 0 };
+    }
     let newProfilesCount = 0;
     let duplicatesSkippedCount = 0;
 
-    const domCards = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
+    const rawDomCards = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
+    const domCards = Array.from(rawDomCards).filter(
+      a => !a.closest?.('.entity-result__simple-insight, [data-field="mutual-connections"], [class*="mutual"]')
+    );
     const processedCardRoots = new Set();
 
     for (const anchor of domCards) {
@@ -1865,11 +2901,59 @@ class ConnectionAcquisitionSession {
       if (!card || processedCardRoots.has(card)) continue;
 
       const profileAnchor = getProfileAnchor(card);
-      if (!profileAnchor) continue;
+      let resolvedProfileAnchor = profileAnchor;
+      if (!resolvedProfileAnchor && getAcquisitionEngineType() === "PEOPLE_SEARCH") {
+        const titleText = getSemanticText(card, [
+          ".entity-result__title-text a span[aria-hidden='true']",
+          ".entity-result__title-text a",
+          "h3",
+          "h2"
+        ]);
+        const anchorText = cleanText(
+          titleText || anchor.getAttribute("aria-label") || anchor.innerText || anchor.textContent
+        );
+        const fallbackName = cleanText(anchorText.split("\n")[0])
+          .replace(/^view\s+/i, "")
+          .replace(/['’]s\s+profile$/i, "")
+          .replace(/\b(1st|2nd|3rd\+)\b/gi, "")
+          .replace(/\b(connect|follow|message)\b/gi, "")
+          .trim();
+        if (fallbackName.length >= 2 && !/^(linkedin member|view profile)$/i.test(fallbackName)) {
+          resolvedProfileAnchor = {
+            anchor,
+            profile_url: profileUrl,
+            name: fallbackName
+          };
+        }
+      }
+      if (!resolvedProfileAnchor) continue;
 
       processedCardRoots.add(card);
 
-      const firstDegree = extractFirstDegreeCard(card, profileAnchor);
+      // 1. Scroll card into view
+      try {
+        if (typeof card.scrollIntoView === "function") {
+          card.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+      } catch (_) {}
+
+      // Scroll delay: 120-180 ms
+      await sleep(random(120, 180));
+
+      // Pre-hover delay: 80-120 ms
+      await sleep(random(80, 120));
+
+      // Trigger mouse hover
+      try {
+        const hoverTarget = resolvedProfileAnchor.anchor || anchor;
+        hoverTarget.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true, cancelable: true, view: window }));
+        hoverTarget.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
+      } catch (_) {}
+
+      // Hover dwell: 550-750 ms
+      await sleep(random(550, 750));
+
+      const firstDegree = extractFirstDegreeCard(card, resolvedProfileAnchor);
       if (firstDegree) {
         const key = this.getDeduplicationKey(firstDegree);
         if (this.seenProfiles.has(key)) {
@@ -1884,21 +2968,27 @@ class ConnectionAcquisitionSession {
           connectionStore.set(key, firstDegree);
           newProfilesCount++;
         }
-        continue;
-      }
 
-      const evidence = extractRelationshipEvidence(card, profileAnchor);
-      if (evidence) {
-        const key = `${this.getDeduplicationKey(evidence)}|${evidence.observed_degree}`;
-        if (this.seenProfiles.has(key)) {
-          duplicatesSkippedCount++;
-        } else {
-          this.seenProfiles.add(key);
-          this.relationshipEvidence.set(key, evidence);
-          relationshipEvidenceStore.set(key, evidence);
-          newProfilesCount++;
+        if (typeof hoverIntelligenceEngine !== "undefined") {
+          hoverIntelligenceEngine.waitForProfileEnrichment(this.connections.get(key) || firstDegree, 1200);
+        }
+      } else {
+        const evidence = extractRelationshipEvidence(card, resolvedProfileAnchor);
+        if (evidence) {
+          const key = `${this.getDeduplicationKey(evidence)}|${evidence.observed_degree}`;
+          if (this.seenProfiles.has(key)) {
+            duplicatesSkippedCount++;
+          } else {
+            this.seenProfiles.add(key);
+            this.relationshipEvidence.set(key, evidence);
+            relationshipEvidenceStore.set(key, evidence);
+            newProfilesCount++;
+          }
         }
       }
+
+      // Between profiles: 60-100 ms
+      await sleep(random(60, 100));
     }
 
     this.lastBatchNewConnections = newProfilesCount;
@@ -1959,7 +3049,8 @@ class ConnectionAcquisitionSession {
   }
 
   async triggerContainerLoad(attemptNumber = 1) {
-    const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"], [class*="next"], [id*="next"], button[aria-label*="Next"]') : null;
+    await waitHumanActionDelay("Connection list scroll/load");
+    const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]') : null;
 
     if (loader && typeof loader.click === "function") {
       try { loader.click(); } catch (e) {}
@@ -1981,10 +3072,10 @@ class ConnectionAcquisitionSession {
     const container = this.findScrollContainer(loader);
     const preCardCount = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]').length : 0;
 
-    // Task 8.9.3: Human-like scroll distance (120–180px, default/avg 150px)
-    const scrollDistance = Math.floor(Math.random() * (180 - 120 + 1)) + 120;
-    // Task 8.9.3: Inter-scroll delay (280–520ms)
-    const scrollDelayMs = Math.floor(Math.random() * (520 - 280 + 1)) + 280;
+    // HOTFIX 13.5.4: Faster Human Scroll (~35% faster): variable distance (180–280px, avg 230px)
+    const scrollDistance = Math.floor(Math.random() * (280 - 180 + 1)) + 180;
+    // Short settling pause after the deliberate, randomized pre-action delay.
+    const scrollDelayMs = Math.floor(Math.random() * (500 - 300 + 1)) + 300;
 
     if (container) {
       telemetry.scroll_container_description = container.className ? `.${container.className.split(' ').join('.')}` : (container.id ? `#${container.id}` : container.tagName);
@@ -2044,16 +3135,16 @@ class ConnectionAcquisitionSession {
         // Wait for smooth animation and human cadence delay
         await new Promise((r) => setTimeout(r, scrollDelayMs));
 
-        // Micro pause: Every 8–12 scrolls, pause for 900–1500ms
+        // Micro pause: Every 10–15 scrolls, pause for 400–750ms
         this.humanScrollCount = (this.humanScrollCount || 0) + 1;
         if (!this.nextMicroPauseThreshold) {
-          this.nextMicroPauseThreshold = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
+          this.nextMicroPauseThreshold = Math.floor(Math.random() * (15 - 10 + 1)) + 10;
         }
 
         if (this.humanScrollCount >= this.nextMicroPauseThreshold) {
           this.humanScrollCount = 0;
-          this.nextMicroPauseThreshold = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
-          const microPauseMs = Math.floor(Math.random() * (1500 - 900 + 1)) + 900;
+          this.nextMicroPauseThreshold = Math.floor(Math.random() * (15 - 10 + 1)) + 10;
+          const microPauseMs = Math.floor(Math.random() * (750 - 400 + 1)) + 400;
           await new Promise((r) => setTimeout(r, microPauseMs));
         }
 
@@ -2099,16 +3190,16 @@ class ConnectionAcquisitionSession {
       // Wait for smooth animation and human cadence delay
       await new Promise((r) => setTimeout(r, scrollDelayMs));
 
-      // Micro pause: Every 8–12 scrolls, pause for 900–1500ms
+      // Micro pause: Every 10–15 scrolls, pause for 400–750ms
       this.humanScrollCount = (this.humanScrollCount || 0) + 1;
       if (!this.nextMicroPauseThreshold) {
-        this.nextMicroPauseThreshold = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
+        this.nextMicroPauseThreshold = Math.floor(Math.random() * (15 - 10 + 1)) + 10;
       }
 
       if (this.humanScrollCount >= this.nextMicroPauseThreshold) {
         this.humanScrollCount = 0;
-        this.nextMicroPauseThreshold = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
-        const microPauseMs = Math.floor(Math.random() * (1500 - 900 + 1)) + 900;
+        this.nextMicroPauseThreshold = Math.floor(Math.random() * (15 - 10 + 1)) + 10;
+        const microPauseMs = Math.floor(Math.random() * (750 - 400 + 1)) + 400;
         await new Promise((r) => setTimeout(r, microPauseMs));
       }
 
@@ -2119,7 +3210,7 @@ class ConnectionAcquisitionSession {
     return { success: true, telemetry, container: scroller };
   }
 
-  async waitForDomCardsToIncrease(previousCardCount, timeoutMs = 2500, container = null) {
+  async waitForDomCardsToIncrease(previousCardCount, timeoutMs = 500, container = null) {
     const startTime = Date.now();
     const observedAddedNodes = [];
     let mutationRecordCount = 0;
@@ -2128,6 +3219,7 @@ class ConnectionAcquisitionSession {
     const targetContainer = container || (document.querySelector ? document.querySelector('main#workspace, main, section') : null) || (document.body || document.documentElement);
 
     let subObserver = null;
+    let interval = null;
     let mutationObserved = false;
     let newCards = 0;
 
@@ -2138,8 +3230,9 @@ class ConnectionAcquisitionSession {
         if (resolved) return;
         resolved = true;
         if (subObserver) {
-          try { subObserver.disconnect(); } catch (e) {}
+          try { subObserver.disconnect(); console.log("[WarmGraph] Card wait observer cleaned up", { page: this.pageCount }); } catch (e) {}
         }
+        if (interval) clearInterval(interval);
         mutationObserved = hasMutation;
         newCards = cardDiff;
         resolve();
@@ -2166,20 +3259,19 @@ class ConnectionAcquisitionSession {
             }
           });
           subObserver.observe(targetContainer, { childList: true, subtree: true });
+          console.log("[WarmGraph] Card wait observer created", { page: this.pageCount });
         }
       } catch (e) {}
 
       if (typeof setInterval === "function") {
-        const interval = setInterval(() => {
+        interval = setInterval(() => {
           const currentCards = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]').length : 0;
           if (currentCards > previousCardCount) {
-            clearInterval(interval);
             finishWait(true, currentCards - previousCardCount);
           } else if (Date.now() - startTime >= timeoutMs) {
-            clearInterval(interval);
             finishWait(false, 0);
           }
-        }, 50);
+        }, 250);
       } else {
         const poll = () => {
           const currentCards = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]').length : 0;
@@ -2188,7 +3280,7 @@ class ConnectionAcquisitionSession {
           } else if (Date.now() - startTime >= timeoutMs) {
             finishWait(false, 0);
           } else if (typeof setTimeout === "function") {
-            setTimeout(poll, 50);
+            setTimeout(poll, 250);
           } else {
             finishWait(false, 0);
           }
@@ -2246,16 +3338,21 @@ class ConnectionAcquisitionSession {
       };
 
       if (typeof fetch === "function") {
+        const importPayload = {
+          ...payload,
+          expected_total: this.expectedTotal,
+          collected_total: this.connections.size,
+          completion_status: this.completionStatus || (this.state === "completed" ? "complete" : "incomplete")
+        };
+        console.log("=== IMPORT PAYLOAD ===");
+        console.log(JSON.stringify(importPayload, null, 2));
         const res = await fetch(`${BACKEND_BASE_URL}/network/import`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...payload,
-            expected_total: this.expectedTotal,
-            collected_total: this.connections.size,
-            completion_status: this.completionStatus || (this.state === "completed" ? "complete" : "incomplete")
-          })
+          body: JSON.stringify(importPayload)
         });
+        console.log("STATUS", res.status);
+        console.log(await res.clone().text());
 
         if (res.ok) {
           const resData = await res.json().catch(() => ({}));
@@ -2283,6 +3380,27 @@ class ConnectionAcquisitionSession {
     }
   }
 
+  async finalizeAndSync() {
+    this.state = "resting";
+    this.completionStatus = "complete";
+    this.syncStatus = "synced";
+    this.isPartial = false;
+    this.statusMessage = "Workspace Up To Date";
+    this.nextBatchAt = null;
+    this.nextSyncDelay = 0;
+    this.countdownSeconds = 0;
+    this.pausedRemainingMs = null;
+    this.estimatedRemainingMs = null;
+    if (getAcquisitionEngineType() === "PEOPLE_SEARCH" || this.connections.size > (this.actualProfiles || 0)) {
+      const finalCount = this.connections.size;
+      this.actualProfiles = finalCount;
+      this.totalConnections = finalCount;
+      this.expectedTotal = finalCount;
+    }
+    await this.checkpointSession();
+    await this.autoSyncToBackend();
+  }
+
   scheduleSyncRetry() {
     if (this.syncRetryTimer) return;
     if (!this.syncRetryCount) this.syncRetryCount = 0;
@@ -2305,10 +3423,11 @@ class ConnectionAcquisitionSession {
       window.__warmgraphAcquisitionRunning = true;
     }
     this.isRunning = true;
-    this.pageCount = 0;
+    if (getAcquisitionEngineType() !== "PEOPLE_SEARCH") this.pageCount = 0;
     this.shouldCancel = false;
     let consecutiveZeroNewCardScrolls = 0;
     const MAX_ZERO_NEW_CARD_SCROLLS = 4;
+    const MAX_EXTRACTION_LIMIT = 350;
 
     if (!this.seenProfiles) this.seenProfiles = new Set();
     this.connections.forEach((c) => {
@@ -2316,59 +3435,244 @@ class ConnectionAcquisitionSession {
       if (key) this.seenProfiles.add(key);
     });
 
-    // ── SSOT: Freeze totalConnections and actualProfiles ONCE per session ────
-    // Only read the LinkedIn header on the very first batch (or if never set).
-    // Subsequent batches must NOT re-parse from DOM to prevent Feed/Home/Search
-    // numbers (e.g. 5574 impressions) from overwriting the frozen header total.
-    if (!this.totalConnections || this.totalConnections === 0) {
-      const domTotal = extractTotalConnectionsFromDom();
-      if (domTotal && domTotal > 0) {
-        this.totalConnections = domTotal;
-        this.expectedTotal = domTotal;
-        // actualProfiles = linkedIn header - 1 (exclude the account owner)
-        this.actualProfiles = domTotal > 1 ? domTotal - 1 : domTotal;
+    const domTotal = extractTotalConnectionsFromDom();
+    const currentEngineType = getAcquisitionEngineType();
+    const startingDegree = currentEngineType === "PEOPLE_SEARCH"
+      ? (this.activeDegreeFilter || getSelectedPeopleSearchDegree())
+      : null;
+    if (startingDegree) this.activeDegreeFilter = startingDegree;
+    console.log("[WarmGraph][PeopleSearch] runAcquisitionLoop started", {
+      engineType: currentEngineType,
+      page: this.pageCount,
+      sessionId: this.sessionId,
+      url: location.href,
+      sessionState: this.state
+    });
+    if (currentEngineType === "PEOPLE_SEARCH") {
+      // People Search: LinkedIn does not expose a total result count.
+      // Show only the live indexed count (no denominator) while crawling.
+      // actualProfiles will be set to the real extracted count at completion.
+      if (this.pageCount === 0 && this.connections.size === 0) {
+        this.totalConnections = 0;
+        this.expectedTotal = 0;
+        this.actualProfiles = 0;
       }
+    } else if (domTotal && domTotal > 0) {
+      this.totalConnections = Math.min(MAX_EXTRACTION_LIMIT, domTotal);
+      this.expectedTotal = Math.min(MAX_EXTRACTION_LIMIT, domTotal);
+      this.actualProfiles = Math.min(MAX_EXTRACTION_LIMIT, domTotal);
+    } else {
+      this.totalConnections = MAX_EXTRACTION_LIMIT;
+      this.expectedTotal = MAX_EXTRACTION_LIMIT;
+      this.actualProfiles = MAX_EXTRACTION_LIMIT;
     }
-    // ────────────────────────────────────────────────────────────────────────
+
+    const targetLimit = Math.min(MAX_EXTRACTION_LIMIT, this.actualProfiles || MAX_EXTRACTION_LIMIT);
 
     while (!this.shouldCancel) {
+      if (currentEngineType === "PEOPLE_SEARCH" && !isPeopleSearchDegreeValid(startingDegree)) {
+        this.state = "paused";
+        this.statusMessage = getSelectedPeopleSearchDegree() ? "Degree filter changed" : "Degree filter removed";
+        await this.checkpointSession();
+        break;
+      }
       if (!isConnectionsPage()) {
         this.state = "paused";
-        this.statusMessage = "Return to Connections to continue syncing.";
+        this.statusMessage = currentEngineType === "PEOPLE_SEARCH" ? "Degree filter removed" : "Return to Connections to continue syncing.";
         if (this.nextBatchAt && this.nextBatchAt > Date.now()) {
           this.pausedRemainingMs = this.nextBatchAt - Date.now();
         }
+        console.log("[WarmGraph] Session paused: page is no longer eligible", { sessionId: this.sessionId, page: this.pageCount, url: location.href });
         await this.checkpointSession();
         break;
       }
 
-      this.pageCount++;
+      if (currentEngineType === "PEOPLE_SEARCH") {
+        const pageReady = await waitForPeopleCards();
+        console.log("[DEBUG][CARDS]", {
+          visible: document.querySelectorAll(".search-results-container li, .reusable-search__result-container").length
+        });
+        if (!isPeopleSearchDegreeValid(startingDegree)) {
+          this.state = "paused";
+          this.statusMessage = getSelectedPeopleSearchDegree() ? "Degree filter changed" : "Degree filter removed";
+          await this.checkpointSession();
+          break;
+        }
+        if (!pageReady) {
+          this.state = "interrupted";
+          this.isPartial = true;
+          this.statusMessage = "LinkedIn results did not stabilize. Acquisition paused.";
+          console.warn("[WarmGraph] Session interrupted: People Search cards not stable", { sessionId: this.sessionId, page: this.pageCount + 1, url: location.href });
+          await this.checkpointSession();
+          break;
+        }
+      } else if (this.pageCount === 0) {
+        const pageReady = await waitForConnectionCardsToStabilize();
+        if (!pageReady) {
+          this.state = "interrupted";
+          this.isPartial = true;
+          this.statusMessage = "LinkedIn connection cards did not stabilize. Acquisition paused.";
+          console.warn("[WarmGraph] Session interrupted: connection cards not stable", { sessionId: this.sessionId, url: location.href });
+          await this.checkpointSession();
+          break;
+        }
+      }
 
-      // STEP 1: Begin Batch -> Overlay changes to "Building"
+      if (currentEngineType === "PEOPLE_SEARCH") {
+        const urlPage = parseInt(new URLSearchParams(location.search).get("page"), 10);
+        this.currentPage = (Number.isFinite(urlPage) && urlPage > 0)
+          ? urlPage
+          : (this.currentPage || this.pageCount + 1);
+        this.pageCount = this.currentPage;
+        this.totalPages = Math.max(this.totalPages || 0, this.currentPage);
+      } else {
+        this.pageCount++;
+      }
+      this.pageExtractionComplete = false;
+      console.log("[WarmGraph][PeopleSearch] extraction page started", {
+        page: this.pageCount,
+        sessionId: this.sessionId,
+        url: location.href,
+        engineType: getAcquisitionEngineType()
+      });
+
+      // STEP 1: Begin Batch -> Overlay changes to "Auto Extracting"
       this.state = "acquiring";
       this.activeFilter = extractActiveFilterFromDom();
       const initialCount = this.connections.size;
-      const expectedText = this.expectedTotal ? ` of ${this.expectedTotal}` : '';
-      this.statusMessage = `Building your relationship graph (${initialCount}${expectedText})...`;
-      await this.checkpointSession();
+      this.statusMessage = `Auto Extracting (${initialCount} / ${targetLimit} Connections)...`;
+      if (currentEngineType !== "PEOPLE_SEARCH") await this.checkpointSession();
 
       let batchNewProfilesCount = 0;
       let batchDuplicatesSkipped = 0;
       let batchVisibleCardsCount = 0;
 
-      // STEP 2 & 3 & 4: Smart Scrolling & DOM Mutation Detection Loop
       let scrollAttemptsInBatch = 0;
       const MAX_SCROLL_ATTEMPTS_PER_BATCH = 6;
+      let peopleSearchIdleRounds = 0;
+      let degreeScopeStopped = false;
 
       while (!this.shouldCancel) {
+        if (currentEngineType === "PEOPLE_SEARCH" && !isPeopleSearchDegreeValid(startingDegree)) {
+          this.state = "paused";
+          this.statusMessage = getSelectedPeopleSearchDegree() ? "Degree filter changed" : "Degree filter removed";
+          await this.checkpointSession();
+          degreeScopeStopped = true;
+          break;
+        }
         if (!isConnectionsPage()) {
           this.state = "paused";
-          this.statusMessage = "Return to Connections to continue syncing.";
+          this.statusMessage = currentEngineType === "PEOPLE_SEARCH" ? "Degree filter removed" : "Return to Connections to continue syncing.";
           if (this.nextBatchAt && this.nextBatchAt > Date.now()) {
             this.pausedRemainingMs = this.nextBatchAt - Date.now();
           }
+          console.log("[WarmGraph] Session paused during page", { sessionId: this.sessionId, page: this.pageCount, url: location.href });
           await this.checkpointSession();
           return;
+        }
+
+        if (currentEngineType === "PEOPLE_SEARCH") {
+          console.log("[DEBUG] visible cards:", getPeopleSearchProfileUrls().length);
+          console.log("[DEBUG] current page:", this.currentPage);
+          const scanRes = await this.scanCurrentPageForUnseen();
+          console.log("[DEBUG] scan result:", {
+            newProfiles: scanRes.newProfilesCount,
+            duplicates: scanRes.duplicatesSkippedCount,
+            visible: scanRes.totalVisibleCards,
+            totalStored: this.connections.size
+          });
+          batchNewProfilesCount += scanRes.newProfilesCount;
+          batchDuplicatesSkipped += scanRes.duplicatesSkippedCount;
+          batchVisibleCardsCount = scanRes.totalVisibleCards;
+
+          if (scanRes.newProfilesCount > 0) {
+            peopleSearchIdleRounds = 0;
+            consecutiveZeroNewCardScrolls = 0;
+            console.log(`[WarmGraph] Added ${scanRes.newProfilesCount} new profiles (${this.connections.size} total)`);
+            await this.checkpointSession();
+            continue;
+          }
+
+          // If profiles were captured on this page and no new profiles remain, await pending extraction tasks before pagination decision
+          if (this.connections.size > 0 || scanRes.totalVisibleCards > 0) {
+            console.log(`[WarmGraph] Visible cards: ${scanRes.totalVisibleCards}`);
+            console.log(`[WarmGraph] Pending hover tasks: ${typeof hoverIntelligenceEngine !== "undefined" ? hoverIntelligenceEngine.getPendingCount() : 0}`);
+            if (typeof hoverIntelligenceEngine !== "undefined") {
+              await hoverIntelligenceEngine.waitForAllPending(5000);
+            }
+            console.log(`[WarmGraph] Pending hover tasks after wait: ${typeof hoverIntelligenceEngine !== "undefined" ? hoverIntelligenceEngine.getPendingCount() : 0}`);
+            console.log(`[WarmGraph] Page ${this.pageCount} enrichment verified (${this.connections.size} total). Moving to pagination decision.`);
+            await this.checkpointSession();
+            break;
+          }
+
+          if (peopleSearchIdleRounds === 0) {
+            peopleSearchIdleRounds = 1;
+            console.log("[WarmGraph] First zero-result scan; loading more of the current page...");
+            await this.triggerContainerLoad(this.pageCount);
+            await sleep(900);
+            continue;
+          }
+
+          let previousCardCount = -1;
+          let stableRounds = 0;
+          const stableStart = Date.now();
+          while (Date.now() - stableStart < 3000 && stableRounds < 2) {
+            const cardCount = getPeopleSearchProfileUrls().length;
+            if (cardCount === previousCardCount) stableRounds++;
+            else stableRounds = 0;
+            previousCardCount = cardCount;
+            if (stableRounds < 2) await sleep(200);
+          }
+
+          if (stableRounds < 2) {
+            peopleSearchIdleRounds = 0;
+            await this.triggerContainerLoad(this.pageCount);
+            continue;
+          }
+
+          console.log("[DEBUG] visible cards:", getPeopleSearchProfileUrls().length);
+          console.log("[DEBUG] current page:", this.currentPage);
+          const confirmationScan = await this.scanCurrentPageForUnseen();
+          console.log("[DEBUG] scan result:", {
+            newProfiles: confirmationScan.newProfilesCount,
+            duplicates: confirmationScan.duplicatesSkippedCount,
+            visible: confirmationScan.totalVisibleCards,
+            totalStored: this.connections.size
+          });
+          batchNewProfilesCount += confirmationScan.newProfilesCount;
+          batchDuplicatesSkipped += confirmationScan.duplicatesSkippedCount;
+          batchVisibleCardsCount = confirmationScan.totalVisibleCards;
+          if (confirmationScan.newProfilesCount > 0) {
+            peopleSearchIdleRounds = 0;
+            await this.checkpointSession();
+            continue;
+          }
+
+          // A stable result list is not proof that extraction succeeded. Never
+          // advance past a page when it contains profiles but the session has
+          // not captured any records; preserve the page for a safe retry.
+          const visibleProfileCount = getPeopleSearchProfileUrls().length;
+          if (visibleProfileCount > 0 && this.connections.size === 0 && this.relationshipEvidence.size === 0) {
+            this.state = "interrupted";
+            this.isPartial = true;
+            this.statusMessage = "Profiles are visible, but none could be extracted. Page was not advanced.";
+            console.warn("[WarmGraph] People Search page not advanced: visible profiles produced zero records", {
+              page: this.pageCount,
+              visibleProfileCount,
+              sessionId: this.sessionId,
+              url: location.href
+            });
+            await this.checkpointSession();
+            break;
+          }
+
+          if (typeof hoverIntelligenceEngine !== "undefined") {
+            await hoverIntelligenceEngine.waitForAllPending(3000);
+          }
+          await this.checkpointSession();
+          console.log(`[WarmGraph] Page exhausted after final confirmation scan. Profiles: ${this.connections.size}`);
+          break;
         }
 
         scrollAttemptsInBatch++;
@@ -2378,29 +3682,23 @@ class ConnectionAcquisitionSession {
         const loadRes = await this.triggerContainerLoad(this.pageCount);
 
         // Wait for DOM mutation (MutationObserver driven)
-        const waitRes = await this.waitForDomCardsToIncrease(initialDomCardCount, 1500, loadRes.container);
+        await this.waitForDomCardsToIncrease(initialDomCardCount, 1500, loadRes.container);
 
         // Scan page for new unseen cards
-        const scanRes = this.scanCurrentPageForUnseen();
+        const scanRes = await this.scanCurrentPageForUnseen();
         batchNewProfilesCount += scanRes.newProfilesCount;
         batchDuplicatesSkipped += scanRes.duplicatesSkippedCount;
         batchVisibleCardsCount = scanRes.totalVisibleCards;
 
-        // NOTE: Do NOT re-parse DOM total here. totalConnections is frozen once
-        // at session start to prevent Feed/Home DOM numbers from corrupting it.
-
-        // If new profiles discovered: break out of scroll loop to complete batch!
         if (scanRes.newProfilesCount > 0) {
           consecutiveZeroNewCardScrolls = 0;
           break;
         }
 
-        // Duplicate-only batch (0 new profiles): continue scrolling until new cards found
         consecutiveZeroNewCardScrolls++;
 
         const hasLoader = !!(typeof document !== "undefined" && typeof document.querySelector === "function" ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]') : null);
 
-        // Structured console debug log for duplicate-only batch
         console.log(`[Batch ${this.pageCount}]\nVisible cards: ${batchVisibleCardsCount}\nNew profiles: 0\n\nScrolling for additional cards...`);
 
         if (consecutiveZeroNewCardScrolls >= MAX_ZERO_NEW_CARD_SCROLLS && !hasLoader) {
@@ -2412,12 +3710,18 @@ class ConnectionAcquisitionSession {
         }
       }
 
-      // STEP 5: Increment extractedConnections, persist session, update overlay immediately
+      if (degreeScopeStopped || (currentEngineType === "PEOPLE_SEARCH" && !isPeopleSearchDegreeValid(startingDegree))) {
+        this.state = "paused";
+        this.statusMessage = getSelectedPeopleSearchDegree() ? "Degree filter changed" : "Degree filter removed";
+        await this.checkpointSession();
+        break;
+      }
+      this.pageExtractionComplete = true;
+
       const currentCount = this.connections.size;
       const nextDelayMs = getRandomAcquisitionDelayMs();
       const nextDelaySec = Math.round(nextDelayMs / 1000);
 
-      // Calculate estimated remaining time (Section 8 formula)
       const now = Date.now();
       if (this.lastBatchStartTime) {
         const batchDur = now - this.lastBatchStartTime;
@@ -2429,38 +3733,76 @@ class ConnectionAcquisitionSession {
       const avgBatchMs = (this.batchDurations && this.batchDurations.length > 0)
         ? Math.round(this.batchDurations.reduce((a, b) => a + b, 0) / this.batchDurations.length)
         : 12000;
-      const remainingProfiles = Math.max(0, (this.actualProfiles || this.expectedTotal || 0) - currentCount);
+      const remainingProfiles = Math.max(0, targetLimit - currentCount);
       const avgNewPerBatch = Math.max(1, batchNewProfilesCount || 8);
       const remainingBatches = Math.ceil(remainingProfiles / avgNewPerBatch);
       this.estimatedRemainingMs = remainingBatches * (avgBatchMs + nextDelayMs);
 
-      // Structured console debug log for batch completion
-      console.log(`[Batch ${this.pageCount}]\nVisible cards: ${batchVisibleCardsCount}\nNew profiles: ${batchNewProfilesCount}\nDuplicates skipped: ${batchDuplicatesSkipped}\n\nExtracted total: ${currentCount}/${this.expectedTotal || currentCount}\n\nNext delay: ${nextDelaySec}s`);
+      console.log(`[Batch ${this.pageCount}]\nVisible cards: ${batchVisibleCardsCount}\nNew profiles: ${batchNewProfilesCount}\nDuplicates skipped: ${batchDuplicatesSkipped}\n\nExtracted total: ${currentCount}/${targetLimit}\n\nNext delay: ${nextDelaySec}s`);
 
-      // Persist session immediately after successful batch
-      await this.checkpointSession();
+      if (currentEngineType === "PEOPLE_SEARCH") {
+        console.log("[WarmGraph][PeopleSearch] page extraction complete", { page: this.pageCount, extracted: this.connections.size, url: location.href });
+        if (this.finishRequested) break;
 
-      // Check completion conditions
-      const hasLoader = !!(typeof document !== "undefined" && typeof document.querySelector === "function" ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]') : null);
+        // Keep People Search in its active UI state while deciding whether
+        // another results page remains. Completion is committed only below,
+        // after the final page scan and a no-next-page decision.
+        this.state = "acquiring";
+        this.statusMessage = "Auto Extracting";
+        await ensurePaginationVisible();
+        const pageState = extractPaginationStateFromDom();
+        console.log(
+          "[PAGINATION HTML]",
+          document.querySelector(".artdeco-pagination")?.outerHTML ||
+          document.querySelector('nav[aria-label*="Pagination" i]')?.outerHTML ||
+          null
+        );
+        this.currentPage = pageState.currentPage || this.currentPage;
+        this.totalPages = Math.max(this.totalPages || 0, pageState.totalPages || 0, this.currentPage || 0);
+        console.log("[WarmGraph][PeopleSearch] pagination decision", { pageState, url: location.href });
+        console.log("[WarmGraph][DECISION]", JSON.stringify({
+          currentPage: pageState.currentPage,
+          totalPages: pageState.totalPages,
+          hasNext: pageState.hasNext,
+          nextFound: !!findEnabledPeopleSearchNextButton()
+        }, null, 2));
 
-      const targetActual = this.actualProfiles || this.expectedTotal;
-      if ((targetActual > 0 && currentCount >= targetActual) || (consecutiveZeroNewCardScrolls >= MAX_ZERO_NEW_CARD_SCROLLS && !hasLoader)) {
-        this.state = "resting";
-        this.completionStatus = "complete";
-        this.syncStatus = "synced";
-        this.isPartial = false;
-        this.statusMessage = "You're all caught up ✨";
-        this.nextBatchAt = null;
-        this.nextSyncDelay = 0;
-        this.countdownSeconds = 0;
-        this.pausedRemainingMs = null;
-        this.estimatedRemainingMs = null;
-        await this.checkpointSession();
-        await this.autoSyncToBackend();
+        if (pageState.hasNext) {
+            console.log(
+                `[WarmGraph] Advancing to Page ${pageState.currentPage + 1}`
+            );
+
+            console.log("[DEBUG] ABOUT TO NAVIGATE", {
+              totalStored: this.connections.size,
+              page: this.currentPage
+            });
+            const moved = await autoAdvanceToNextPage(this);
+
+            if (moved) {
+                continue;
+            }
+
+            break;
+        }
+
+        console.log("[WarmGraph] Final page reached");
+
+        await this.finalizeAndSync();
+        break;
+      } else {
+        const nextBtn = findPaginationNextButton();
+        if (nextBtn) {
+          console.log(`[WarmGraph] Found enabled Next button. Navigating to next page...`);
+          await navigateToNextPageAndWait(this);
+          this.scanCurrentPageForUnseen();
+          await this.checkpointSession();
+          continue;
+        }
+
+        await this.finalizeAndSync();
         break;
       }
 
-      // STEP 6: Return overlay to "Waiting" with fresh random delay (8-30s)
       this.nextSyncDelay = nextDelayMs;
       this.nextBatchAt = Date.now() + nextDelayMs;
       this.nextSyncAt = new Date(this.nextBatchAt).toISOString();
@@ -2468,14 +3810,23 @@ class ConnectionAcquisitionSession {
       this.statusMessage = `Next batch in ${nextDelaySec}s`;
       await this.checkpointSession();
 
-      // Inter-batch delay driven by nextBatchAt & background alarm
       await this.waitForNextBatch(this.nextBatchAt);
       this.countdownSeconds = 0;
     }
 
-    if (this.shouldCancel) {
-      this.state = "idle";
-      this.statusMessage = "Acquisition cancelled.";
+    if (this.finishRequested) {
+      await this.completeAndSync();
+    } else if (this.pauseRequested) {
+      this.pauseRequested = false;
+      this.shouldCancel = false;
+      this.state = "paused";
+      this.statusMessage = "Progress saved. Continue when you're ready.";
+      await this.checkpointSession();
+    } else if (this.shouldCancel) {
+      if (!/^Degree filter/.test(this.statusMessage || "")) {
+        this.state = "idle";
+        this.statusMessage = "Acquisition cancelled.";
+      }
       await this.checkpointSession();
     }
     if (typeof window !== "undefined") {
@@ -2484,6 +3835,7 @@ class ConnectionAcquisitionSession {
     this.isRunning = false;
     this.activeLoopPromise = null;
     this.nextBatchResolver = null;
+    console.log("[WarmGraph] Session ended", { sessionId: this.sessionId, page: this.pageCount, state: this.state, extracted: this.connections.size });
   }
 
   async reconcileNetworkWithDom(forceCheck = false) {
@@ -2590,23 +3942,49 @@ class ConnectionAcquisitionSession {
           this.statusMessage = `Next batch in ${remSec}s`;
           this.checkpointSessionSync();
         }
-      }, 500);
+      }, 1000);
 
       setTimeout(finish, remaining + 100);
     });
   }
 
   start(stateName = "acquiring") {
-    if (!isConnectionsPage()) {
+    const engineType = getAcquisitionEngineType();
+    if (engineType === "PEOPLE_SEARCH") this.engineType = engineType;
+    if (engineType === "PEOPLE_SEARCH" && !this.activeDegreeFilter) {
+      this.activeDegreeFilter = getSelectedPeopleSearchDegree();
+    }
+    console.log("[WarmGraph][PeopleSearch] startAutomaticAcquisition check", {
+      engineType,
+      requestedState: stateName,
+      url: location.href,
+      running: !!((typeof window !== "undefined" && window.__warmgraphAcquisitionRunning) || this.isRunning || this.activeLoopPromise),
+      state: this.state
+    });
+    if (engineType === "CONNECTIONS") {
+      console.log("[WarmGraph][PeopleSearch] start returned: Connections page initializes workspace only");
+      this.state = "connections_ready";
+      this.statusMessage = "Workspace Ready";
+      this.checkpointSessionSync();
+      return this.getStatus();
+    }
+    if (!isApprovedExtractionPage()) {
+      console.log("[WarmGraph][PeopleSearch] start returned: wrong or ineligible page", { engineType, url: location.href });
       this.state = "paused";
-      this.statusMessage = "Return to Connections to continue syncing.";
+      this.statusMessage = engineType === "PEOPLE_SEARCH" ? "Degree filter removed" : "Return to LinkedIn Filtered Search to continue.";
       this.checkpointSessionSync();
       return this.getStatus();
     }
     if ((typeof window !== "undefined" && window.__warmgraphAcquisitionRunning) || this.isRunning || this.activeLoopPromise) {
+      console.log("[WarmGraph][PeopleSearch] start returned: existing acquisition session", {
+        windowRunning: !!(typeof window !== "undefined" && window.__warmgraphAcquisitionRunning),
+        isRunning: this.isRunning,
+        hasActiveLoopPromise: !!this.activeLoopPromise
+      });
       return this.getStatus();
     }
     if ((this.state === "acquiring" || this.state === "collecting" || this.state === "waiting_for_content" || this.state === "settling") && this.activeLoopPromise) {
+      console.log("[WarmGraph][PeopleSearch] start returned: active loop already owns session state", { state: this.state, url: location.href });
       return this.getStatus();
     }
     if (!this.sessionId) {
@@ -2614,9 +3992,21 @@ class ConnectionAcquisitionSession {
     }
     this.lockedPath = CONNECTIONS_LOCKED_PATH;
     this.shouldCancel = false;
+    this.finishRequested = false;
+    this.pauseRequested = false;
+    this.manuallyFinished = false;
+    this.completionStatus = "incomplete";
     this.state = stateName;
-    this.activeLoopPromise = this.runAcquisitionLoop();
-    this.checkpointSessionSync();
+    console.log("[WarmGraph][PeopleSearch] state transition: start -> runAcquisitionLoop", { state: stateName, url: location.href });
+    const runPromise = this.runAcquisitionLoop();
+    this.activeLoopPromise = runPromise.finally(() => {
+      if (typeof window !== "undefined") window.__warmgraphAcquisitionRunning = false;
+      this.isRunning = false;
+      if (this.activeLoopPromise === trackedPromise) this.activeLoopPromise = null;
+      console.log("[WarmGraph] Session lifecycle released", { sessionId: this.sessionId, page: this.pageCount, state: this.state });
+    });
+    const trackedPromise = this.activeLoopPromise;
+    if (engineType !== "PEOPLE_SEARCH") this.checkpointSessionSync();
     return this.getStatus();
   }
 
@@ -2629,12 +4019,17 @@ class ConnectionAcquisitionSession {
 
   getStatus() {
     const collected = this.connections.size;
-    const expected = this.expectedTotal || Math.max(collected, 1);
+    const engineType = getAcquisitionEngineType() || this.engineType || "CONNECTIONS";
+    const isPeopleSearchSession = engineType === "PEOPLE_SEARCH";
+    const expected = this.expectedTotal || (isPeopleSearchSession
+      ? (this.totalConnections || this.actualProfiles || collected)
+      : Math.max(collected, 1));
     const rawActual = this.actualProfiles !== undefined ? this.actualProfiles : (expected > 1 ? expected - 1 : (expected || collected || 1));
     const isCompletedOrResting = (this.state === "completed" || this.state === "resting" || this.completionStatus === "complete") && (rawActual > 0 && collected >= rawActual);
     const actual = rawActual;
     const remaining = Math.max(0, actual - collected);
-    const progressPct = actual > 0 ? (collected >= actual ? 100 : Math.min(99, Math.floor((collected / actual) * 100))) : (collected > 0 ? 100 : 0);
+    const isOpenEndedPeopleSearch = getAcquisitionEngineType() === "PEOPLE_SEARCH" && !isCompletedOrResting;
+    const progressPct = actual > 0 ? (collected >= actual ? 100 : Math.min(99, Math.floor((collected / actual) * 100))) : (collected > 0 && !isOpenEndedPeopleSearch ? 100 : 0);
     const imported = this.importedRecords;
     const activeFilterObj = this.activeFilter || extractActiveFilterFromDom();
     const now = Date.now();
@@ -2645,14 +4040,17 @@ class ConnectionAcquisitionSession {
 
     return {
       sessionId: this.sessionId,
+      engineType,
+      engine_type: engineType,
       lockedPath: this.lockedPath || CONNECTIONS_LOCKED_PATH,
       state: isPaused && (this.state === "acquiring" || this.state === "waiting") ? "paused" : this.state,
       completion_status: this.completionStatus || (this.state === "completed" ? (collected >= expected ? "complete" : "complete_rendered_dataset") : "incomplete"),
       page_count: this.pageCount,
       expected_total: expected,
       // SSOT: totalConnections is the frozen LinkedIn header value from runAcquisitionLoop start
-      totalConnections: this.totalConnections || expected,
+      totalConnections: isPeopleSearchSession ? (this.totalConnections ?? 0) : (this.totalConnections || expected),
       actualProfiles: actual,
+      lastKnownActualProfiles: isPaused ? Math.max(actual || 0, collected) : actual,
       collected_count: collected,
       extractedConnections: collected,
       importedRecords: imported,
@@ -2668,12 +4066,16 @@ class ConnectionAcquisitionSession {
       active_filter: activeFilterObj,
       remaining_count: remaining,
       remainingConnections: remaining,
+      remainingProfiles: remaining,
       first_degree_count: collected,
       relationship_evidence_count: this.relationshipEvidence.size,
       last_batch_new_connections: this.lastBatchNewConnections,
       last_batch_new_evidence: this.lastBatchNewEvidence,
       is_partial: this.isPartial,
       status_message: isPaused ? "Return to Connections to continue syncing." : this.statusMessage,
+      statusMessage: isPaused ? "Return to Connections to continue syncing." : this.statusMessage,
+      isNavigating: !!this.isNavigating,
+      navigatingLabel: this.navigatingLabel || null,
       sync_status: this.syncStatus,
       sync_message: this.syncMessage,
       last_synced_at: this.lastSyncTimestamp || null,
@@ -2681,7 +4083,18 @@ class ConnectionAcquisitionSession {
       container_diagnostics: inspectLiveScrollContainers(),
       connections: Array.from(this.connections.values()),
       relationship_evidence: Array.from(this.relationshipEvidence.values()),
-      reliable_dom_total: this.totalConnections || expected
+      reliable_dom_total: this.totalConnections || expected,
+      paginationLabel: isPeopleSearchSession && this.currentPage
+        ? `Page ${this.currentPage} of ${this.totalPages || 1}`
+        : ((extractPaginationStateFromDom()?.label) || (this.pageCount > 0 ? `Page ${this.pageCount}` : "")),
+      currentPage: isPeopleSearchSession
+        ? (this.currentPage || extractPaginationStateFromDom()?.currentPage || this.pageCount)
+        : (extractPaginationStateFromDom()?.currentPage || this.pageCount),
+      totalPages: isPeopleSearchSession
+        ? (this.totalPages || extractPaginationStateFromDom()?.totalPages || null)
+        : (extractPaginationStateFromDom()?.totalPages || null),
+      known_profile_urls: Array.from(this.connections.values()).map(c => c.profile_url).filter(Boolean),
+      extracted_count: collected
     };
   }
 
@@ -2836,6 +4249,9 @@ function extractTotalConnectionsFromDom() {
   if (!isConnectionsPage()) {
     return null;
   }
+  if (getAcquisitionEngineType() === "PEOPLE_SEARCH") {
+    return null;
+  }
   try {
     const selectors = [
       'h1', 'h2', 'h3', 'header', 'main',
@@ -2879,89 +4295,137 @@ function extractTotalConnectionsFromDom() {
   } catch (e) {
     // ignore DOM parsing errors
   }
-  return null;
+  return 350;
 }
 
 if (typeof window !== "undefined") {
+  window.getAcquisitionEngineType = getAcquisitionEngineType;
   window.getRandomAcquisitionDelayMs = getRandomAcquisitionDelayMs;
   window.extractTotalConnectionsFromDom = extractTotalConnectionsFromDom;
 }
 
 async function maybeAutoStartAcquisition() {
+  console.log("[WarmGraph][PeopleSearch] maybeAutoStartAcquisition entered", { url: location.href });
   await acquisitionSession.initOrHydrateSession();
-  const isConn = isConnectionsPage();
+  const engineType = getAcquisitionEngineType();
+  console.log("[WarmGraph][PeopleSearch] maybeAutoStartAcquisition page check", { engineType, url: location.href });
 
-  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(["currentSession"], (res) => {
-      const cs = res && res.currentSession;
-      if (cs) {
-        console.log({
-          running: !!(typeof window !== "undefined" && window.__warmgraphAcquisitionRunning),
-          state: cs.state,
-          nextBatchAt: cs.nextBatchAt
+  if (engineType === "CONNECTIONS") {
+    // Phase A — Connections Initialization
+    // Resolve owner identity & read total connection count silently. Do NOT scrape profiles here.
+    try {
+      await detectAndPersistOwnerIdentity();
+    } catch (_) {}
+
+    const domTotal = extractTotalConnectionsFromDom();
+    if (domTotal && domTotal > 0) {
+      acquisitionSession.totalConnections = domTotal;
+      acquisitionSession.expectedTotal = domTotal;
+      acquisitionSession.actualProfiles = domTotal;
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({
+          total_connections: domTotal,
+          totalConnections: domTotal,
+          total_network_size: domTotal,
+          workspace_ready: true
         });
       }
-    });
+    }
+    acquisitionSession.state = "connections_ready";
+    acquisitionSession.statusMessage = "Workspace Ready";
+    acquisitionSession.checkpointSessionSync();
+    return;
   }
 
-  if (isConn) {
-    const extractedCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
-    const targetCount = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
-    if (targetCount > 0 && extractedCount >= targetCount) {
-      acquisitionSession.state = "completed";
-      acquisitionSession.checkpointSessionSync();
-    } else if (!window.__warmgraphAcquisitionRunning) {
-      acquisitionSession.start();
-    }
-  } else {
-    // We are on a NON-Connections page (e.g. Feed, Home, Jobs, etc.)
-    if (
-      acquisitionSession.state === "acquiring" ||
-      acquisitionSession.state === "waiting" ||
-      acquisitionSession.state === "building" ||
-      acquisitionSession.state === "waiting_for_content" ||
-      acquisitionSession.state === "settling" ||
-      acquisitionSession.state === "interrupted"
-    ) {
+  if (engineType === "PEOPLE_SEARCH") {
+    if (!getSelectedPeopleSearchDegree()) {
+      acquisitionSession.shouldCancel = true;
       acquisitionSession.state = "paused";
-      acquisitionSession.statusMessage = "Return to Connections to continue syncing.";
-      if (acquisitionSession.nextBatchAt && acquisitionSession.nextBatchAt > Date.now()) {
-        acquisitionSession.pausedRemainingMs = acquisitionSession.nextBatchAt - Date.now();
-      }
+      acquisitionSession.statusMessage = "Degree filter removed";
+      if (acquisitionSession.nextBatchResolver) acquisitionSession.nextBatchResolver();
       acquisitionSession.checkpointSessionSync();
+      return;
     }
+    // Phase B — Filtered People Extraction
+    // Resume persisted progress before considering a fresh session.
+    if (acquisitionSession.hasSavedSession && ["completed", "resting"].includes(acquisitionSession.state)) {
+      acquisitionSession.checkpointSessionSync();
+      return;
+    }
+    if (!window.__warmgraphAcquisitionRunning) {
+      if (acquisitionSession.hasSavedSession) {
+        await acquisitionSession.resume();
+      } else {
+        acquisitionSession.start();
+      }
+    } else {
+      console.log("[WarmGraph][PeopleSearch] auto-start returned: acquisition already running");
+    }
+    return;
+  }
+
+  console.log("[WarmGraph][PeopleSearch] auto-start returned: wrong page", { engineType, url: location.href });
+
+  // Non-approved page (Feed, Home, Jobs, etc.)
+  if (
+    acquisitionSession.state === "acquiring" ||
+    acquisitionSession.state === "waiting" ||
+    acquisitionSession.state === "building" ||
+    acquisitionSession.state === "waiting_for_content" ||
+    acquisitionSession.state === "settling" ||
+    acquisitionSession.state === "interrupted"
+  ) {
+    acquisitionSession.state = "paused";
+    acquisitionSession.statusMessage = "Return to LinkedIn Filtered Search to continue.";
+    if (acquisitionSession.nextBatchAt && acquisitionSession.nextBatchAt > Date.now()) {
+      acquisitionSession.pausedRemainingMs = acquisitionSession.nextBatchAt - Date.now();
+    }
+    acquisitionSession.checkpointSessionSync();
   }
 }
 
-setTimeout(maybeAutoStartAcquisition, 100);
+let initialAutoStartTimer = setTimeout(maybeAutoStartAcquisition, 100);
 
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
     if (acquisitionSession && ["acquiring", "waiting_for_content", "settling", "waiting"].includes(acquisitionSession.state)) {
       acquisitionSession.state = "paused";
-      acquisitionSession.statusMessage = "Return to Connections to continue syncing.";
+      acquisitionSession.statusMessage = "Return to LinkedIn Filtered Search to continue.";
       if (acquisitionSession.nextBatchAt && acquisitionSession.nextBatchAt > Date.now()) {
         acquisitionSession.pausedRemainingMs = acquisitionSession.nextBatchAt - Date.now();
       }
       acquisitionSession.checkpointSessionSync();
     }
+    if (scanTimer) clearTimeout(scanTimer);
+    if (pageScanObserver) {
+      pageScanObserver.disconnect();
+      console.log("[WarmGraph] Page scan observer cleaned up", { url: location.href });
+    }
+    if (peopleSearchPollTimer) clearInterval(peopleSearchPollTimer);
+    if (spaRouteObserver) {
+      spaRouteObserver.disconnect();
+      console.log("[WarmGraph] SPA route observer cleaned up", { url: location.href });
+    }
+    if (spaStartTimer) clearTimeout(spaStartTimer);
+    if (initialScanTimer) clearTimeout(initialScanTimer);
+    if (initialAutoStartTimer) clearTimeout(initialAutoStartTimer);
+    if (manualPaginationClickListener) document.removeEventListener("click", manualPaginationClickListener, true);
+    if (scrollTelemetryListener) window.removeEventListener("scroll", scrollTelemetryListener, true);
+    if (visibilityChangeListener) document.removeEventListener("visibilitychange", visibilityChangeListener);
   });
 
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
-    document.addEventListener("visibilitychange", () => {
+    visibilityChangeListener = () => {
       if (document.visibilityState === "visible") {
         if (acquisitionSession) {
           acquisitionSession.isTabHidden = false;
-          if (isConnectionsPage()) {
-            const extractedCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
-            const targetCount = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
-            if (targetCount === 0 || extractedCount < targetCount) {
-              if (!window.__warmgraphAcquisitionRunning) {
-                acquisitionSession.start();
-              } else if (acquisitionSession.nextBatchAt && Date.now() >= acquisitionSession.nextBatchAt) {
-                if (acquisitionSession.nextBatchResolver) {
-                  acquisitionSession.nextBatchResolver();
-                }
+          if (getAcquisitionEngineType() === "PEOPLE_SEARCH") {
+            if (acquisitionSession.manuallyFinished || (acquisitionSession.state === "completed" && acquisitionSession.completionStatus === "complete")) return;
+            if (!window.__warmgraphAcquisitionRunning) {
+              acquisitionSession.start();
+            } else if (acquisitionSession.nextBatchAt && Date.now() >= acquisitionSession.nextBatchAt) {
+              if (acquisitionSession.nextBatchResolver) {
+                acquisitionSession.nextBatchResolver();
               }
             }
           }
@@ -2971,7 +4435,8 @@ if (typeof window !== "undefined") {
           acquisitionSession.isTabHidden = true;
         }
       }
-    });
+    };
+    document.addEventListener("visibilitychange", visibilityChangeListener);
   }
 }
 
@@ -3009,12 +4474,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true; // async
       }
       case "SYNC_AGAIN":
-      case "syncAgain": {
+      case "syncAgain":
+      case "SYNC_NETWORK":
+      case "syncNetwork": {
         if (isApprovedExtractionPage()) {
           (async () => {
-            const rec = await acquisitionSession.reconcileNetworkWithDom(true);
-            if (rec.action !== "skip") {
-              acquisitionSession.start();
+            if ((typeof window !== "undefined" && window.__warmgraphAcquisitionRunning) || acquisitionSession.isRunning || acquisitionSession.activeLoopPromise) {
+              console.log("[WarmGraph] Extraction session active. Resuming existing session...");
+              acquisitionSession.state = "acquiring";
+              acquisitionSession.checkpointSessionSync();
+            } else {
+              const rec = await acquisitionSession.reconcileNetworkWithDom(true);
+              if (rec.action !== "skip") {
+                acquisitionSession.start();
+              } else {
+                console.log("[WarmGraph] Session complete. Performing incremental sync only...");
+                acquisitionSession.scanCurrentPageForUnseen();
+                acquisitionSession.state = "resting";
+                acquisitionSession.checkpointSessionSync();
+                acquisitionSession.autoSyncToBackend();
+              }
             }
           })();
         } else {
@@ -3029,7 +4508,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "runNextBatch":
       case "triggerNextBatch": {
         if (isConnectionsPage()) {
-          if (acquisitionSession.nextBatchResolver) {
+          if (getAcquisitionEngineType() === "PEOPLE_SEARCH") {
+            if (acquisitionSession.nextBatchResolver) {
+              acquisitionSession.nextBatchResolver();
+            } else if (!window.__warmgraphAcquisitionRunning && findEnabledPeopleSearchNextButton()) {
+              acquisitionSession.start("acquiring");
+            }
+          } else if (acquisitionSession.nextBatchResolver) {
             acquisitionSession.nextBatchResolver();
           } else if (!window.__warmgraphAcquisitionRunning) {
             const extractedCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
@@ -3043,18 +4528,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       case "startAutomatedAcquisition": {
-        let status;
-        if (acquisitionSession.state === "acquiring") {
-          status = acquisitionSession.getStatus();
-        } else {
-          status = acquisitionSession.start();
-        }
-        sendResponse({
-          success: true,
-          status,
-          batch: status
+        acquisitionSession.resume().then(status => {
+          sendResponse({ success: true, status, batch: status });
+        }).catch(error => {
+          sendResponse({ success: false, error: error.message });
         });
-        break;
+        return true;
       }
       case "startCollection": {
         acquisitionSession.reset(true);
@@ -3072,8 +4551,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       case "pauseCollection": {
-        acquisitionSession.state = "paused";
-        acquisitionSession.checkpointSessionSync();
+        acquisitionSession.pause();
         const status = { ...acquisitionSession.getStatus(), state: "paused" };
         sendResponse({
           success: true,
@@ -3094,11 +4572,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case "finishCollection":
       case "finishAcquisition": {
-        acquisitionSession.scanCurrentPage();
-        const res = acquisitionSession.finish();
-        acquisitionSession.reset(true);
-        sendResponse(res);
-        break;
+        acquisitionSession.finishAndSync().then(status => {
+          sendResponse({ success: true, status, data: status });
+        }).catch(error => sendResponse({ success: false, error: error.message }));
+        return true;
       }
       case "cancelCollection":
       case "cancelAcquisition": {
@@ -3138,6 +4615,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       case "syncToBackend": {
+        if (message.force && getAcquisitionEngineType() === "PEOPLE_SEARCH") {
+          if (!getSelectedPeopleSearchDegree()) {
+            sendResponse({ success: false, sync_status: "blocked", error: "A LinkedIn degree filter is required to sync People Search results." });
+            break;
+          }
+          if (["completed", "resting"].includes(acquisitionSession.state) && acquisitionSession.completionStatus === "complete" && !acquisitionSession.isPartial) {
+            acquisitionSession.state = "completed";
+            acquisitionSession.syncStatus = "idle";
+          }
+        }
         acquisitionSession.syncToBackend().then(() => {
           sendResponse({
             success: acquisitionSession.syncStatus === "synced",
@@ -3169,17 +4656,645 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 
 // =========================================================
+// HOVER INTELLIGENCE ENGINE (TASK 13.5.8)
+// Enriches existing graph records with metadata from LinkedIn's
+// floating profile hover cards. Works on any LinkedIn page.
+// Browser-agnostic: no hashed class names, no user-agent checks.
+// =========================================================
+
+class HoverIntelligenceEngine {
+  constructor() {
+    // Per-session cache — each normalized profile URL is processed once.
+    this._hoverCache = new Set();
+    // Pending extraction timer handle for the current candidate.
+    this._pendingTimer = null;
+    this._pendingCards = new Map();
+    this._pendingProfiles = new Map();
+    this._processingBatch = false;
+    // The MutationObserver instance, created lazily on start().
+    this._observer = null;
+    // Whether the engine has been started.
+    this._started = false;
+  }
+
+  /**
+   * Return true when a newly-inserted DOM node looks like a LinkedIn
+   * floating profile hover card. Uses only generic, stable signals:
+   *   - role="dialog" | role="tooltip" | role="listbox"
+   *   - aria-label / aria-describedby presence
+   *   - contains at least one profile link (<a href*="/in/">)
+   * Never matches on hashed/generated CSS class names.
+   */
+  _isHoverCard(node) {
+    try {
+      if (!node || node.nodeType !== 1) return false;
+
+      const role = node.getAttribute("role");
+      const isFloating =
+        role === "dialog" || role === "tooltip" || role === "listbox";
+
+      const hasAriaLabel =
+        node.hasAttribute("aria-label") ||
+        node.hasAttribute("aria-describedby") ||
+        node.hasAttribute("aria-live");
+
+      const hasProfileLink =
+        typeof node.querySelector === "function" &&
+        !!node.querySelector('a[href*="/in/"]');
+
+      return (isFloating || hasAriaLabel) && hasProfileLink;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Extract enrichment data from a hover card element.
+   * Returns null when the card does not contain a usable profile URL.
+   */
+  _extractFromHoverCard(card) {
+    try {
+      // Profile URL
+      const profileAnchor = card.querySelector('a[href*="/in/"]');
+      if (!profileAnchor) return null;
+
+      const profileUrl = normalizeProfileUrl(profileAnchor.href);
+      if (!profileUrl) return null;
+
+      // Name — try semantic selectors, fall back to aria-label on the anchor.
+      let name = null;
+      const nameSelectors = [
+        '[data-field="name"]',
+        'span[class*="name"]',
+        'div[class*="name"]',
+        'h1', 'h2', 'h3'
+      ];
+      for (const sel of nameSelectors) {
+        try {
+          const el = card.querySelector(sel);
+          if (el) {
+            const t = cleanText(el.innerText || el.textContent);
+            if (t && t.length > 1 && t.length < 100) { name = t; break; }
+          }
+        } catch (_) {}
+      }
+      if (!name && profileAnchor.getAttribute("aria-label")) {
+        name = cleanText(profileAnchor.getAttribute("aria-label"));
+      }
+
+      // Headline
+      let headline = null;
+      const headlineSelectors = [
+        '[data-field="headline"]',
+        'span[class*="headline"]',
+        'div[class*="headline"]',
+        'p[class*="subtitle"]',
+        '.entity-result__primary-subtitle'
+      ];
+      for (const sel of headlineSelectors) {
+        try {
+          const el = card.querySelector(sel);
+          if (el) {
+            const t = cleanText(el.innerText || el.textContent);
+            if (t && t.length > 1) { headline = t; break; }
+          }
+        } catch (_) {}
+      }
+
+      // Location
+      let location = null;
+      const locationSelectors = [
+        '[data-field="location"]',
+        'span[class*="location"]',
+        'div[class*="location"]',
+        'span[class*="subline"]'
+      ];
+      for (const sel of locationSelectors) {
+        try {
+          const el = card.querySelector(sel);
+          if (el) {
+            const t = cleanText(el.innerText || el.textContent);
+            if (t && t.length > 1 && t.length < 120) { location = t; break; }
+          }
+        } catch (_) {}
+      }
+
+      // Mutual connections
+      const cardText = cleanText(card.innerText || "");
+      const mutualText = extractMutualConnectionsText(card, cardText);
+      const mutualNames = mutualText ? extractMutualConnectionNames(mutualText, name) : null;
+
+      // Profile photo URL
+      let photoUrl = null;
+      try {
+        const img = card.querySelector('img[src*="licdn"], img[src*="media.licdn"]') ||
+                    card.querySelector('img[aria-hidden]') ||
+                    card.querySelector('img');
+        if (img && img.src && img.src.startsWith("http")) photoUrl = img.src;
+      } catch (_) {}
+
+      // Company / role_type derived from headline
+      const companyRes = resolveCompanyAndRoleType(card, cardText, headline);
+
+      // Education
+      let education = null;
+      const educationSelectors = [
+        '[data-field="education"]',
+        'span[class*="education"]',
+        'div[class*="education"]',
+        '.pv-entity__degree-info',
+        '.entity-result__secondary-subtitle'
+      ];
+      for (const sel of educationSelectors) {
+        try {
+          const el = card.querySelector(sel);
+          if (el) {
+            const t = cleanText(el.innerText || el.textContent);
+            if (t && t.length > 1 && t.length < 150) { education = t; break; }
+          }
+        } catch (_) {}
+      }
+      if (!education && cardText) {
+        const eduMatch = cardText.match(/\b(University|College|Institute|Academy|School|B\.?Tech|M\.?Tech|B\.?A|M\.?A|Ph\.?D|Bachelor|Master)\b[^•·\n,]{2,60}/i);
+        if (eduMatch) {
+          education = cleanText(eduMatch[0]);
+        }
+      }
+
+      return {
+        name,
+        profile_url: profileUrl,
+        headline,
+        company: companyRes.company || null,
+        role_type: companyRes.role_type || null,
+        education: education || null,
+        location,
+        mutual_connections_text: mutualText || null,
+        mutual_connection_names: mutualNames || null,
+        photo_url: photoUrl || null,
+        source: "hover_card",
+        captured_at: new Date().toISOString()
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Attempt to enrich the connection store with data from a hover card.
+   * Called after a brief debounce delay once the card is detected.
+   */
+  _processCard(card) {
+    try {
+      const data = this._extractFromHoverCard(card);
+      if (!data || !data.profile_url) return;
+
+      // Skip if already processed this profile in this session.
+      const cacheKey = `url:${data.profile_url}`;
+      if (this._hoverCache.has(cacheKey)) return;
+      this._hoverCache.add(cacheKey);
+
+      const dedupKey = `url:${data.profile_url}`;
+
+      // Read existing records from both stores.
+      const existingInSession =
+        acquisitionSession && acquisitionSession.connections
+          ? acquisitionSession.connections.get(dedupKey)
+          : null;
+      const existingInStore = connectionStore.get(dedupKey);
+      const existing = existingInSession || existingInStore || null;
+
+      // Fill-missing-only merge: mergeRecord(previous, current) lets `current` win.
+      // We want existing graph data to win and hover to fill only missing fields,
+      // so pass hover data as `previous` and existing as `current`.
+      const merged = existing ? mergeRecord(data, existing) : data;
+
+      // Write to both stores — same pattern as scanCurrentPageForUnseen().
+      if (acquisitionSession && acquisitionSession.connections) {
+        acquisitionSession.connections.set(dedupKey, merged);
+      }
+      connectionStore.set(dedupKey, merged);
+
+      const pending = this._pendingProfiles.get(dedupKey);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this._pendingProfiles.delete(dedupKey);
+        pending.resolve(merged);
+      }
+
+      // Persist to storage only when the acquisition loop is idle (avoids
+      // interfering with an active extraction run).
+      const sessionState = acquisitionSession ? acquisitionSession.state : null;
+      const isSafeToCheckpoint =
+        sessionState === "idle" ||
+        sessionState === "completed" ||
+        sessionState === "paused" ||
+        sessionState === null ||
+        sessionState === undefined;
+
+      if (
+        isSafeToCheckpoint &&
+        acquisitionSession &&
+        typeof acquisitionSession.checkpointSessionSync === "function"
+      ) {
+        acquisitionSession.checkpointSessionSync();
+      }
+    } catch (_) {
+      // Never let hover enrichment throw — must not interrupt the acquisition loop.
+    }
+  }
+
+  waitForProfileEnrichment(visibleProfile, timeout = 1200) {
+    const profileUrl = normalizeProfileUrl(visibleProfile && visibleProfile.profile_url);
+    if (!profileUrl) return Promise.resolve(visibleProfile);
+
+    const key = `url:${profileUrl}`;
+    if (this._isAlreadyEnriched(profileUrl)) return Promise.resolve(visibleProfile);
+
+    const previous = this._pendingProfiles.get(key);
+    if (previous) return previous.promise;
+
+    let resolveWait;
+    const promise = new Promise(resolve => { resolveWait = resolve; });
+    const pending = {
+      promise,
+      resolve: resolveWait,
+      visibleProfile,
+      timer: setTimeout(() => {
+        this._pendingProfiles.delete(key);
+        resolveWait(visibleProfile);
+      }, Math.max(0, timeout))
+    };
+    this._pendingProfiles.set(key, pending);
+    return promise;
+  }
+
+  getPendingCount() {
+    return this._pendingProfiles ? this._pendingProfiles.size : 0;
+  }
+
+  async waitForAllPending(timeoutMs = 5000) {
+    if (!this._pendingProfiles || this._pendingProfiles.size === 0) return;
+
+    const pendingPromises = Array.from(this._pendingProfiles.values()).map(p => p.promise);
+
+    await Promise.race([
+      Promise.allSettled(pendingPromises),
+      sleep(timeoutMs)
+    ]);
+  }
+
+  _getHoverProfileUrl(card) {
+    try {
+      const anchor = card && card.querySelector('a[href*="/in/"]');
+      return anchor ? normalizeProfileUrl(anchor.href) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _isAlreadyEnriched(profileUrl) {
+    if (!profileUrl) return true;
+    const key = `url:${profileUrl}`;
+    if (this._hoverCache.has(key)) return true;
+
+    const record = (acquisitionSession && acquisitionSession.connections && acquisitionSession.connections.get(key)) || connectionStore.get(key);
+    return !!(record && (
+      record.source === "hover_card" ||
+      record.photo_url ||
+      record.education
+    ));
+  }
+
+  /**
+   * Queue hover cards and process up to five at a time after a short render delay.
+   * This queue is observer-driven and never blocks People Search scrolling.
+   */
+  _scheduleExtraction(card) {
+    const profileUrl = this._getHoverProfileUrl(card);
+    if (!profileUrl || this._isAlreadyEnriched(profileUrl)) return;
+
+    const key = `url:${profileUrl}`;
+    const pendingProfile = this._pendingProfiles.get(key);
+    if (!pendingProfile) return;
+    if (pendingProfile) {
+      clearTimeout(pendingProfile.timer);
+      pendingProfile.timer = setTimeout(() => {
+        this._pendingProfiles.delete(key);
+        pendingProfile.resolve(pendingProfile.visibleProfile);
+      }, 250);
+    }
+    this._pendingCards.set(key, card);
+    if (this._pendingTimer) return;
+
+    this._pendingTimer = setTimeout(() => {
+      this._pendingTimer = null;
+      this._processPendingBatches();
+    }, 180);
+  }
+
+  async _processPendingBatches() {
+    if (this._processingBatch) return;
+    this._processingBatch = true;
+    try {
+      while (this._pendingCards.size > 0) {
+        const batch = Array.from(this._pendingCards.entries()).slice(0, 5);
+        batch.forEach(([key]) => this._pendingCards.delete(key));
+        await Promise.all(batch.map(([, card]) => Promise.resolve().then(() => this._processCard(card))));
+      }
+    } finally {
+      this._processingBatch = false;
+      if (this._pendingCards.size > 0 && !this._pendingTimer) {
+        this._pendingTimer = setTimeout(() => {
+          this._pendingTimer = null;
+          this._processPendingBatches();
+        }, 180);
+      }
+    }
+  }
+
+  /**
+   * Start observing the DOM for hover card insertions.
+   * Creates exactly one dedicated MutationObserver — entirely separate
+   * from the existing acquisition loop observer.
+   */
+  start() {
+    if (this._started) return;
+    this._started = true;
+
+    try {
+      this._observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (this._isHoverCard(node)) {
+              this._scheduleExtraction(node);
+            } else if (node.nodeType === 1 && typeof node.children !== "undefined") {
+              // LinkedIn sometimes wraps the hover card in a portal/overlay div.
+              try {
+                for (const child of node.children) {
+                  if (this._isHoverCard(child)) {
+                    this._scheduleExtraction(child);
+                  }
+                }
+              } catch (_) {}
+            }
+          }
+        }
+      });
+
+      const root =
+        (typeof document !== "undefined" && document.body) ||
+        (typeof document !== "undefined" && document.documentElement);
+
+      if (root) {
+        this._observer.observe(root, { childList: true, subtree: true });
+        console.log("[WarmGraph] Hover observer created");
+      }
+    } catch (_) {
+      // Gracefully fail in non-browser or restricted environments.
+    }
+  }
+
+  /**
+   * Stop the observer and clean up pending timers. Called on page unload.
+   */
+  stop() {
+    try {
+      if (this._pendingTimer) {
+        clearTimeout(this._pendingTimer);
+        this._pendingTimer = null;
+      }
+      this._pendingCards.clear();
+      this._pendingProfiles.forEach(pending => {
+        clearTimeout(pending.timer);
+        pending.resolve(pending.visibleProfile);
+      });
+      this._pendingProfiles.clear();
+      if (this._observer) {
+        this._observer.disconnect();
+        this._observer = null;
+        console.log("[WarmGraph] Hover observer cleaned up");
+      }
+      this._started = false;
+    } catch (_) {}
+  }
+
+  /** Expose the hover cache for testing. */
+  get hoverCache() {
+    return this._hoverCache;
+  }
+}
+
+// Instantiate the global hover intelligence engine singleton.
+const hoverIntelligenceEngine = new HoverIntelligenceEngine();
+
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  hoverIntelligenceEngine.start();
+
+  // Piggyback on the existing beforeunload handler to clean up.
+  window.addEventListener("beforeunload", () => {
+    hoverIntelligenceEngine.stop();
+  });
+}
+
+// Expose for testing and debugging.
+if (typeof window !== "undefined") {
+  window.HoverIntelligenceEngine = HoverIntelligenceEngine;
+  window.hoverIntelligenceEngine = hoverIntelligenceEngine;
+}
+
+
+// =========================================================
 // MUTATION OBSERVER
 // =========================================================
 
-let scanTimer = null;
+let initialScanTimer = null;
+let peopleSearchPollTimer = null;
+let spaStartTimer = null;
+let pageScanObserver = null;
+let spaRouteObserver = null;
+let manualPaginationClickListener = null;
+let __wgCurrentUrl = location.href;
+let observedPeopleSearchFirstProfileUrl = getPeopleSearchProfileUrls()[0] || null;
+let handlingPeopleSearchUrlChange = false;
+let lastLoggedPeopleSearchRetryUrl = null;
 
 const SCAN_DEBOUNCE_MS = 800;
 
+// Diagnostic only: correlate a manual pagination click with the next URL event.
+manualPaginationClickListener = (event) => {
+  const target = event.target && event.target.closest
+    ? event.target.closest('.artdeco-pagination button, .artdeco-pagination a, button[aria-label*="Next" i], a[aria-label*="Next" i]')
+    : null;
+  if (!target) return;
+  const beforeUrl = location.href;
+  console.log("[WarmGraph][PeopleSearch] manual pagination click", {
+    label: target.getAttribute("aria-label"),
+    text: cleanText(target.innerText || target.textContent),
+    beforeUrl
+  });
+  setTimeout(() => console.log("[WarmGraph][PeopleSearch] manual pagination click after event", {
+    beforeUrl,
+    afterUrl: location.href,
+    urlChanged: beforeUrl !== location.href
+  }), 0);
+};
+document.addEventListener("click", manualPaginationClickListener, true);
 
-const observer =
+async function handlePeopleSearchUrlChange(trigger = "direct") {
+  const nextUrl = window.location.href;
+  const engineType = getAcquisitionEngineType();
+  const changed = nextUrl !== __wgCurrentUrl;
+
+  if (changed) {
+    console.log("WG BUILD 12:58", getAcquisitionEngineType(), location.href);
+    console.log("[WarmGraph][PeopleSearch] URL observer fired", {
+      pathname: window.location.pathname,
+      search: window.location.search,
+      detectedBy: trigger,
+      eligible: engineType === "PEOPLE_SEARCH",
+      engineType,
+      retryScheduled: isEligiblePeopleSearch() && engineType !== "PEOPLE_SEARCH",
+      url: nextUrl
+    });
+  }
+
+  // LinkedIn often updates the SPA path and its search parameters in separate
+  // history/DOM steps. Do not consume that URL transition until the filtered
+  // People Search route is actually eligible; otherwise a later parameter
+  // update leaves the URL unchanged and this handler would never retry.
+  if (!isEligiblePeopleSearch()) {
+    if (changed) console.log("[WarmGraph][PeopleSearch] handler returned: pathname is not People Search", { pathname: window.location.pathname, url: nextUrl });
+    __wgCurrentUrl = nextUrl;
+    observedPeopleSearchFirstProfileUrl = null;
+    return;
+  }
+
+  if (engineType !== "PEOPLE_SEARCH") {
+    if (changed && lastLoggedPeopleSearchRetryUrl !== nextUrl) {
+      lastLoggedPeopleSearchRetryUrl = nextUrl;
+      console.log("[WarmGraph][PeopleSearch] handler deferred: People Search path not eligible yet; interval retry remains scheduled", { pathname: window.location.pathname, search: window.location.search, url: nextUrl });
+    }
+    return;
+  }
+  lastLoggedPeopleSearchRetryUrl = null;
+
+  if (nextUrl === __wgCurrentUrl) {
+    if (changed) console.log("[WarmGraph][PeopleSearch] handler returned: URL already handled", { url: nextUrl });
+    return;
+  }
+  __wgCurrentUrl = nextUrl;
+  acquisitionSession.pageExtractionComplete = false;
+
+  const selectedDegree = getSelectedPeopleSearchDegree();
+  if (!selectedDegree) {
+    acquisitionSession.state = "paused";
+    acquisitionSession.statusMessage = "Degree filter removed";
+    if (acquisitionSession.isRunning || acquisitionSession.activeLoopPromise) {
+      acquisitionSession.shouldCancel = true;
+      if (acquisitionSession.nextBatchResolver) acquisitionSession.nextBatchResolver();
+    }
+    acquisitionSession.checkpointSessionSync();
+    console.log("[WarmGraph][PeopleSearch] extraction stopped: degree filter removed", { url: nextUrl });
+    return;
+  }
+
+  const previousDegree = acquisitionSession.activeDegreeFilter;
+  if (previousDegree && previousDegree !== selectedDegree) {
+    if (acquisitionSession.pendingDegreeRestart) return;
+    acquisitionSession.pendingDegreeRestart = selectedDegree;
+    console.log("[WarmGraph][PeopleSearch] degree filter changed; starting a fresh scoped acquisition", {
+      previousDegree,
+      selectedDegree,
+      url: nextUrl
+    });
+    const restartForSelectedDegree = async () => {
+      acquisitionSession.pendingDegreeRestart = null;
+      if (getAcquisitionEngineType() !== "PEOPLE_SEARCH" || getSelectedPeopleSearchDegree() !== selectedDegree) return;
+      acquisitionSession.reset(true);
+      acquisitionSession.activeDegreeFilter = selectedDegree;
+      acquisitionSession.engineType = "PEOPLE_SEARCH";
+      acquisitionSession.start("acquiring");
+    };
+    if (acquisitionSession.activeLoopPromise) {
+      acquisitionSession.shouldCancel = true;
+      if (acquisitionSession.nextBatchResolver) acquisitionSession.nextBatchResolver();
+      acquisitionSession.activeLoopPromise.finally(restartForSelectedDegree);
+    } else {
+      restartForSelectedDegree();
+    }
+    return;
+  }
+
+  if (acquisitionSession.manuallyFinished) {
+    return;
+  }
+
+  if (acquisitionSession.state === "completed" || acquisitionSession.state === "resting" || acquisitionSession.completionStatus === "complete") {
+    if (engineType === "PEOPLE_SEARCH") {
+      acquisitionSession.reset(true);
+      acquisitionSession.activeDegreeFilter = getSelectedPeopleSearchDegree();
+      acquisitionSession.engineType = "PEOPLE_SEARCH";
+    } else {
+      return;
+    }
+  }
+
+  if (window.__warmgraphAcquisitionRunning || handlingPeopleSearchUrlChange) {
+    console.log("[WarmGraph][PeopleSearch] handler returned: acquisition already running or URL handler busy", { acquisitionRunning: !!window.__warmgraphAcquisitionRunning, handling: handlingPeopleSearchUrlChange, state: acquisitionSession.state, url: nextUrl });
+    return;
+  }
+  console.log("[WarmGraph][PeopleSearch] eligible SPA route; waiting for result cards", { url: nextUrl });
+  handlingPeopleSearchUrlChange = true;
+
+  acquisitionSession.isNavigating = true;
+  acquisitionSession.state = "navigating";
+  acquisitionSession.statusMessage = "Waiting for LinkedIn...";
+  console.log("[WarmGraph][PeopleSearch] state transition: URL changed -> navigating", { url: nextUrl });
+  acquisitionSession.checkpointSessionSync();
+
+  try {
+    let cards;
+    try {
+      cards = await waitForPeopleResultCards(10000);
+    } catch (error) {
+      console.warn("[WarmGraph][PeopleSearch] handler returned: result cards unavailable", { error: error.message, url: nextUrl });
+      acquisitionSession.state = "interrupted";
+      acquisitionSession.isPartial = true;
+      acquisitionSession.statusMessage = "LinkedIn results did not finish loading. Acquisition paused.";
+      acquisitionSession.checkpointSessionSync();
+      return;
+    }
+
+    const currentProfiles = getPeopleSearchProfileUrls();
+    if (cards.length === 0 || currentProfiles.length === 0) {
+      console.warn("[WarmGraph][PeopleSearch] handler returned: result cards unavailable", { cardCount: cards.length, profileCount: currentProfiles.length, url: nextUrl });
+      acquisitionSession.state = "interrupted";
+      acquisitionSession.isPartial = true;
+      acquisitionSession.statusMessage = "LinkedIn results did not finish loading. Acquisition paused.";
+      acquisitionSession.checkpointSessionSync();
+      return;
+    }
+
+    observedPeopleSearchFirstProfileUrl = currentProfiles[0];
+    acquisitionSession.completionStatus = "incomplete";
+    acquisitionSession.isPartial = false;
+    acquisitionSession.state = "acquiring";
+    acquisitionSession.statusMessage = "Auto Extracting";
+    console.log("[WarmGraph][PeopleSearch] state transition: waiting_for_content -> acquiring", { profileCount: currentProfiles.length, firstProfile: currentProfiles[0], url: location.href });
+    acquisitionSession.checkpointSessionSync();
+    acquisitionSession.start("acquiring");
+  } finally {
+    handlingPeopleSearchUrlChange = false;
+    console.log("[WarmGraph][PeopleSearch] URL handler finished", { state: acquisitionSession.state, url: location.href });
+  }
+}
+
+
+pageScanObserver =
   new MutationObserver(
     (mutations) => {
+      handlePeopleSearchUrlChange("mutation-observer");
 
       if (
         !mutations.some(
@@ -3206,22 +5321,66 @@ const observer =
 
 
 try {
-  observer.observe(
-    document.documentElement,
+  pageScanObserver.observe(
+    document.body || document.documentElement,
     {
       childList: true,
       subtree: true
     }
   );
+  console.log("[WarmGraph] Page scan observer created", { url: location.href });
 } catch (e) {
   // Ignore observer error in virtual environment
+}
+
+if (typeof setInterval === "function") {
+  peopleSearchPollTimer = setInterval(() => handlePeopleSearchUrlChange("poll"), 1000);
 }
 
 
 // Initial scan so the content store
 // is ready when the popup is opened.
 
-setTimeout(
+initialScanTimer = setTimeout(
   scanAndMaybeSync,
   1500
 );
+
+// =========================================================
+// LINKEDIN SPA NAVIGATION OBSERVER
+// =========================================================
+
+let __wgLastUrl = location.href;
+
+function handleSpaNavigation() {
+  const engine = getAcquisitionEngineType();
+
+  if (!engine) return;
+
+  console.log("[WarmGraph] SPA route:", engine);
+
+  // The shared acquisitionSession owns all acquisition starts.
+  if (window.__warmgraphAcquisitionRunning || acquisitionSession.activeLoopPromise) {
+    console.log("[WarmGraph] SPA auto-start skipped: shared session already active", { engine, state: acquisitionSession.state });
+    return;
+  }
+
+  if (spaStartTimer) clearTimeout(spaStartTimer);
+  spaStartTimer = setTimeout(() => {
+    if (getAcquisitionEngineType()) {
+      startAutomaticAcquisition();
+    }
+  }, 1200);
+}
+
+spaRouteObserver = new MutationObserver(() => {
+  if (location.href !== __wgLastUrl) {
+    __wgLastUrl = location.href;
+    handleSpaNavigation();
+  }
+});
+spaRouteObserver.observe(document.body, {
+  childList: true,
+  subtree: true
+});
+console.log("[WarmGraph] SPA route observer created", { url: location.href });

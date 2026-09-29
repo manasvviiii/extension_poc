@@ -22,8 +22,9 @@ from providers import (
     RelationshipDataProvider,
     extension_payload_to_snapshot,
 )
-from auth import current_context, get_auth_context
+from auth import current_context, get_auth_context, get_current_user, LocalUser
 from auth.context import AuthContext, compatibility_context, require_authenticated, require_owner_access
+from repositories.repository_provider import get_graph_repository
 
 from entity_resolution.normalization import parse_company_from_headline
 from services.graph_service import (
@@ -32,6 +33,8 @@ from services.graph_service import (
     profile_node_id,
     normalized_person_name,
 )
+from services.admin_service import AdminService
+from services.cloud_sync_service import CloudSyncService
 from services.scoring import (
     RECENCY_WINDOW_DAYS,
     OBSERVED_MUTUAL_BASE_SCORE,
@@ -76,6 +79,79 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/auth/me")
+def get_auth_session_user(user: LocalUser = Depends(get_current_user)):
+    """Cloud-ready local authentication session status endpoint."""
+    return {
+        "user": user.dict(),
+        "authenticated": True,
+        "mode": "local_abstraction"
+    }
+
+
+@app.get("/admin/metrics")
+def get_admin_metrics(auth_context: AuthContext = Depends(get_auth_context)):
+    """Founder-only monitoring console metrics endpoint."""
+    service = AdminService()
+    return service.get_metrics()
+
+
+@app.delete("/admin/users/{user_id}")
+def delete_admin_user(user_id: str, auth_context: AuthContext = Depends(get_auth_context)):
+    """Founder-only endpoint to delete a user graph repository."""
+    repo = get_graph_repository()
+    success = repo.delete_user(user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found.")
+    return {"success": True, "deleted_user_id": user_id}
+
+
+# =========================================================
+# CLOUD SYNC ADAPTER ENDPOINTS (TASK 13.5)
+# =========================================================
+
+@app.post("/sync/network")
+def sync_network_cloud(
+    request: dict[str, Any],
+    auth_context: AuthContext = Depends(get_auth_context),
+):
+    """Cloud sync endpoint for network connections & evidence."""
+    user_id = request.get("user_id") or request.get("owner_id") or "local_user"
+    service = CloudSyncService()
+    return service.sync_network(user_id, request)
+
+
+@app.post("/sync/relationships")
+def sync_relationships_cloud(
+    request: dict[str, Any],
+    auth_context: AuthContext = Depends(get_auth_context),
+):
+    """Cloud sync endpoint for relationship evidence records."""
+    user_id = request.get("user_id") or request.get("owner_id") or "local_user"
+    service = CloudSyncService()
+    return service.sync_relationships(user_id, request)
+
+
+@app.get("/sync/status")
+def get_sync_status_cloud(
+    user_id: str = "local_user",
+    auth_context: AuthContext = Depends(get_auth_context),
+):
+    """Cloud sync status & progress endpoint."""
+    service = CloudSyncService()
+    return service.get_sync_status(user_id)
+
+
+@app.get("/sync/history")
+def get_sync_history_cloud(
+    user_id: str = "local_user",
+    auth_context: AuthContext = Depends(get_auth_context),
+):
+    """Cloud sync session history endpoint."""
+    service = CloudSyncService()
+    return service.get_sync_history(user_id)
 
 
 # =========================================================
@@ -399,16 +475,8 @@ def save_network(
         )
         return
 
-    path = network_path(owner_id)
-
-    path.write_text(
-        json.dumps(
-            data,
-            indent=2,
-            ensure_ascii=False
-        ),
-        encoding="utf-8"
-    )
+    repo = get_graph_repository()
+    repo.save_network(owner_id, data)
 
 
 def find_and_bind_latest_imported_network(
@@ -474,26 +542,12 @@ def load_network(
         if loaded is not None:
             return loaded
 
-    path = network_path(owner_id)
+    repo = get_graph_repository()
+    loaded = repo.get_network(owner_id)
+    if loaded is not None:
+        return loaded
 
-    if not path.exists():
-        fixture_path = FIXTURES_DIR / f"{owner_id}.json"
-        if fixture_path.exists() and (is_demo_mode() or owner_id in {"final_demo_owner", "test_owner", "empty_test_owner"}):
-            path = fixture_path
-        else:
-            fallback = find_and_bind_latest_imported_network(owner_id, auth_context)
-            if fallback is not None:
-                return fallback
-            return None
-
-    try:
-        return json.loads(
-            path.read_text(
-                encoding="utf-8"
-            )
-        )
-    except Exception:
-        return None
+    return find_and_bind_latest_imported_network(owner_id, auth_context)
 
 
 def provider_for(owner_id: str) -> RelationshipDataProvider:

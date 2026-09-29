@@ -132,15 +132,39 @@ function initCommandSearch() {
   });
 }
 
+/* =========================================================
+   LOCAL WORKSPACE PROVISIONING (TASK 13.5.3)
+========================================================= */
+
+async function initWorkspaceHeader() {
+  if (typeof AuthService === "undefined") return;
+
+  const user = await AuthService.getCurrentUser();
+  const workspaceIdEl = document.getElementById("workspaceIdText");
+  const workspaceLastSyncEl = document.getElementById("workspaceLastSyncText");
+
+  if (user && user.id) {
+    if (workspaceIdEl) {
+      const truncatedId = user.id.length > 10 ? user.id.substring(0, 9) + "…" : user.id;
+      workspaceIdEl.textContent = truncatedId;
+    }
+    if (workspaceLastSyncEl) {
+      workspaceLastSyncEl.textContent = "Just now";
+    }
+  }
+}
+
 if (typeof document !== "undefined") {
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
       initTabNavigation();
       initCommandSearch();
+      initWorkspaceHeader();
     });
   } else {
     initTabNavigation();
     initCommandSearch();
+    initWorkspaceHeader();
   }
 }
 
@@ -167,6 +191,31 @@ function renderIdentityPending() {
   identityEl.textContent = "Identity Pending — Open any LinkedIn page to connect owner ID.";
 }
 
+/**
+ * Returns true when the identity warning should be suppressed.
+ * Called before showing "Identity Pending" to avoid blocking the workflow.
+ */
+function shouldSuppressIdentityWarning(currentSession) {
+  // Suppress when extraction is actively running
+  if (currentSession) {
+    const activeStates = ["acquiring", "collecting", "resumed", "waiting", "waiting_for_content", "settling", "preparing"];
+    if (activeStates.includes(currentSession.state)) return true;
+    // Suppress when profiles have been extracted
+    const extracted = currentSession.extractedConnections || currentSession.collectedCount || 0;
+    if (extracted > 0) return true;
+    // Suppress on People Search and Connections engine
+    const engineType = currentSession.engineType || currentSession.engine_type || "";
+    if (engineType === "PEOPLE_SEARCH" || engineType === "CONNECTIONS") return true;
+  }
+
+  // Suppress based on current page URL visible in the popup's active tab
+  if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.query) {
+    // This check is async — handled separately in the IIFE below
+  }
+
+  return false;
+}
+
 (async () => {
   // Step 1: check chrome.storage.local for warmgraph_owner (canonical key)
   const identity = await getStoredOwnerId();
@@ -176,7 +225,20 @@ function renderIdentityPending() {
     return;
   }
 
-  // Step 2: storage empty — show "detecting..." and query all LinkedIn tabs
+  // Step 2: Check if extraction is active — if so, silently skip the banner
+  const sessionData = await new Promise(resolve =>
+    chrome.storage.local.get(["currentSession", "acquisition_session"], r => resolve(r))
+  );
+  const activeSession = (sessionData && sessionData.currentSession) || (sessionData && sessionData.acquisition_session) || null;
+
+  if (shouldSuppressIdentityWarning(activeSession)) {
+    // Quietly hide identity element — don't block or interrupt extraction
+    const identityEl = document.getElementById("identity");
+    if (identityEl) identityEl.style.display = "none";
+    return;
+  }
+
+  // Step 3: storage empty — show "detecting..." and query all LinkedIn tabs
   const identityEl = document.getElementById("identity");
   if (identityEl) {
     identityEl.className = "pending";
@@ -193,6 +255,18 @@ function renderIdentityPending() {
       if (!tabs || tabs.length === 0) {
         // No LinkedIn tab open at all
         renderIdentityPending();
+        return;
+      }
+
+      // Check if any LinkedIn tab is on an approved extraction page — suppress if so
+      const isOnExtractionPage = tabs.some(tab => {
+        const url = tab.url || "";
+        const isConnections = url.includes("/mynetwork/invite-connect/connections");
+        const isPeopleSearch = url.includes("/search/results/people") && /network=(%5B%22|%5b%22|\[%22|\[")F/i.test(url);
+        return isConnections || isPeopleSearch;
+      });
+      if (isOnExtractionPage) {
+        if (identityEl) identityEl.style.display = "none";
         return;
       }
 
@@ -675,7 +749,25 @@ function updateAcquisitionDashboard(status) {
     }
   }
 
-  if (state === "resting" || (actual > 0 && extracted === actual)) {
+  const engineType = status.engineType || status.engine_type || "";
+  const isPeopleSearch = engineType === "PEOPLE_SEARCH";
+  const pagesProcessed = status.page_count || status.pageCount || 1;
+
+  if (isPeopleSearch) {
+    if (state === "resting" || state === "completed" || (actual > 0 && extracted === actual)) {
+      if (heroDisplayEl) heroDisplayEl.textContent = `${extracted} Total Profiles`;
+      if (heroLabelEl) heroLabelEl.textContent = `${pagesProcessed} Pages`;
+      if (heroSecondaryEl) heroSecondaryEl.textContent = `${extracted} Total Profiles • ${pagesProcessed} Pages`;
+      if (countDisplayEl) countDisplayEl.textContent = `${extracted} Profiles Indexed`;
+      if (instructionEl) instructionEl.textContent = `Workspace Up To Date`;
+    } else {
+      if (heroDisplayEl) heroDisplayEl.textContent = `${extracted} Profiles Indexed`;
+      if (heroLabelEl) heroLabelEl.textContent = `Page ${pagesProcessed}`;
+      if (heroSecondaryEl) heroSecondaryEl.textContent = `${extracted} Profiles Indexed`;
+      if (countDisplayEl) countDisplayEl.textContent = `${extracted} Profiles Indexed`;
+      if (instructionEl) instructionEl.textContent = humanized.subtext;
+    }
+  } else if (state === "resting" || (actual > 0 && extracted === actual)) {
     if (heroDisplayEl) heroDisplayEl.textContent = `${extracted} / ${actual} mapped`;
     if (heroLabelEl) heroLabelEl.textContent = `(100%)`;
     if (heroSecondaryEl) heroSecondaryEl.textContent = `All LinkedIn connections mapped`;
@@ -688,10 +780,10 @@ function updateAcquisitionDashboard(status) {
     if (countDisplayEl) countDisplayEl.textContent = `${extracted} of ${actual} connections`;
     if (instructionEl) instructionEl.textContent = humanized.subtext;
   } else {
-    if (heroDisplayEl) heroDisplayEl.textContent = `${extracted} Connections Mapped`;
-    if (heroLabelEl) heroLabelEl.textContent = extracted === 1 ? "connection" : "connections";
-    if (heroSecondaryEl) heroSecondaryEl.textContent = `${extracted} connections discovered`;
-    if (countDisplayEl) countDisplayEl.textContent = `${extracted} connections found`;
+    if (heroDisplayEl) heroDisplayEl.textContent = `${extracted} Profiles Indexed`;
+    if (heroLabelEl) heroLabelEl.textContent = extracted === 1 ? "profile" : "profiles";
+    if (heroSecondaryEl) heroSecondaryEl.textContent = `${extracted} Profiles Indexed`;
+    if (countDisplayEl) countDisplayEl.textContent = `${extracted} Profiles Indexed`;
     if (instructionEl) instructionEl.textContent = humanized.subtext;
   }
 

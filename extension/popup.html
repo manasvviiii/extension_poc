@@ -574,171 +574,177 @@
 <body>
 
   <!-- Top Header -->
-  <div class="header-container">
+  <div class="header-container" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 2px 0;">
     <div>
       <div class="brand-title">
         <div class="brand-icon">✦</div>
         WarmGraph <span>v2</span>
       </div>
-      <p class="subtitle">Warm-introduction network platform</p>
-    </div>
-  </div>
-
-  <!-- Identity Ready / Pending Banner -->
-  <div id="identity" class="pending">
-    Detecting your LinkedIn identity...
-  </div>
-
-  <!-- Hero Dashboard Card -->
-  <div id="acquisitionContainer">
-    <div class="dashboard-top-row">
-      <span class="dashboard-brand-tag">WarmGraph</span>
-      <div id="acquisitionStatusBadge" class="status-badge">
-        <span class="status-badge-dot"></span>
-        <span id="acquisitionStatusText">Resting</span>
-      </div>
-    </div>
-
-    <div class="hero-metric-group">
-      <div>
-        <span id="heroCountDisplay">0</span>
-        <span id="heroCountLabel" class="hero-label">Connections Mapped</span>
-      </div>
-      <div id="heroSecondaryText">All LinkedIn connections mapped</div>
-    </div>
-
-    <div id="acquisitionProgressBarContainer">
-      <div id="acquisitionProgressBar"></div>
-    </div>
-
-    <div id="acquisitionStatusTitle">You're all caught up ✨</div>
-    <div id="acquisitionInstruction">No new connections found. Your network is fully synced.</div>
-    <div id="acquisitionRemainingText" style="display:none;">0 remaining</div>
-    <div id="batchCountdownText" style="display:none;">Next batch in --s</div>
-
-    <!-- Controls & Actions -->
-    <div class="action-controls-row">
-      <button id="syncAgainBtn" type="button" class="primary-action-btn">
-        <span>🔄</span> Sync Again
-      </button>
-      <span id="syncStatusBadge" style="display:none;"></span>
-    </div>
-
-    <!-- Compatibility Section Containers -->
-    <div id="activeFilterContainer" style="display:none;">
-      <span id="activeFilterText"></span>
-    </div>
-    <div id="acquisitionCountDisplay" style="display:none;">0 connections found</div>
-    <div id="acquisitionReassuranceBanner" style="display:none;"></div>
-    <div id="syncSuccessScreen" style="display:none;">
-      <span id="syncedCountSubtext"></span>
-      <span id="lastSyncedTimestampText"></span>
-      <button id="successContinueToResearchBtn" type="button" style="display:none;"></button>
-    </div>
-    <div id="networkReadyCtaSection" style="display:none;">
-      <button id="openWarmGraphWorkspaceBtn" type="button" style="display:none;"></button>
-    </div>
-
-    <!-- Developer Diagnostics (Hidden when DEV_MODE = false) -->
-    <div style="display:none;">
-      <button id="openDevDashboardBtn" type="button"></button>
-      <button id="toggleDebugTelemetryBtn" type="button"></button>
-      <div id="telemetryDiagnostics"></div>
-    </div>
-  </div>
-
-  <!-- Tab Navigation Bar -->
-  <div class="tab-nav">
-    <button id="tabBtnOverview" type="button" class="tab-btn active">Overview</button>
-    <button id="tabBtnSearch" type="button" class="tab-btn">Search</button>
-    <button id="tabBtnWarmPath" type="button" class="tab-btn">Warm Path</button>
-    <button id="tabBtnGraph" type="button" class="tab-btn">Graph</button>
-  </div>
-
-  <!-- Tab 1: Overview Panel -->
-  <div id="tabPanelOverview" class="tab-panel active">
-    <div class="section">
-      <div class="section-title">Extraction Preview</div>
-      <div style="margin-bottom:10px;">
-        <input id="searchConnectionsInput" type="text" placeholder="Filter extracted connections..." />
-      </div>
-      <div id="output">
-        <div class="status-box">No data extracted yet.</div>
+      <div id="workspaceMeta" style="font-size: 11px; color: #94A3B8; font-weight: 500; margin-top: 2px;">
+        Workspace ID: <span id="workspaceIdText" style="font-family: monospace; color: #38BDF8;">wg_...</span> • Last Sync: <span id="workspaceLastSyncText">Just now</span>
       </div>
     </div>
   </div>
 
-  <!-- Tab 2: Search Panel (Command Palette) -->
-  <div id="tabPanelSearch" class="tab-panel">
-    <div class="section">
-      <div class="section-title">Target Search</div>
-      
-      <div class="command-search-wrapper">
-        <span class="command-search-icon">🔍</span>
-        <input id="commandSearchInput" type="text" class="command-search-input" placeholder="Search people, companies, or roles..." />
-      </div>
+  <div id="mainDashboard">
+    <!-- Identity Ready / Pending Banner -->
+    <div id="identity" class="pending">
+      Detecting your LinkedIn identity...
+    </div>
 
-      <!-- Filters (Synchronized with command input & backend payload) -->
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;">
-        <div>
-          <label for="company">Company</label>
-          <input id="company" placeholder="Example Corp" />
-        </div>
-        <div>
-          <label for="targetRole">Role</label>
-          <input id="targetRole" placeholder="CFO / SWE" />
+    <!-- Hero Dashboard Card -->
+    <div id="acquisitionContainer">
+      <div class="dashboard-top-row">
+        <span class="dashboard-brand-tag">WarmGraph</span>
+        <div id="acquisitionStatusBadge" class="status-badge">
+          <span class="status-badge-dot"></span>
+          <span id="acquisitionStatusText">Resting</span>
         </div>
       </div>
 
-      <div style="margin-bottom: 12px;">
-        <label for="dealSide">Deal side</label>
-        <select id="dealSide">
-          <option value="sell_side">Sell-side</option>
-          <option value="buy_side">Buy-side</option>
-        </select>
+      <div class="hero-metric-group">
+        <div>
+          <span id="heroCountDisplay">0</span>
+          <span id="heroCountLabel" class="hero-label">Connections Mapped</span>
+        </div>
+        <div id="heroSecondaryText">All LinkedIn connections mapped</div>
       </div>
 
-      <button id="searchTarget" type="button" class="primary-action-btn" style="width: 100%;">
-        Find Target Person
-      </button>
+      <div id="acquisitionProgressBarContainer">
+        <div id="acquisitionProgressBar"></div>
+      </div>
 
-      <div id="targetSearchResults" style="margin-top:12px;"></div>
+      <div id="acquisitionStatusTitle">You're all caught up ✨</div>
+      <div id="acquisitionInstruction">No new connections found. Your network is fully synced.</div>
+      <div id="acquisitionRemainingText" style="display:none;">0 remaining</div>
+      <div id="batchCountdownText" style="display:none;">Next batch in --s</div>
+
+      <!-- Controls & Actions -->
+      <div class="action-controls-row">
+        <button id="syncAgainBtn" type="button" class="primary-action-btn">
+          <span>🔄</span> Sync Again
+        </button>
+        <span id="syncStatusBadge" style="display:none;"></span>
+      </div>
+
+      <!-- Compatibility Section Containers -->
+      <div id="activeFilterContainer" style="display:none;">
+        <span id="activeFilterText"></span>
+      </div>
+      <div id="acquisitionCountDisplay" style="display:none;">0 connections found</div>
+      <div id="acquisitionReassuranceBanner" style="display:none;"></div>
+      <div id="syncSuccessScreen" style="display:none;">
+        <span id="syncedCountSubtext"></span>
+        <span id="lastSyncedTimestampText"></span>
+        <button id="successContinueToResearchBtn" type="button" style="display:none;"></button>
+      </div>
+      <div id="networkReadyCtaSection" style="display:none;">
+        <button id="openWarmGraphWorkspaceBtn" type="button" style="display:none;"></button>
+      </div>
+
+      <!-- Developer Diagnostics (Hidden when DEV_MODE = false) -->
+      <div style="display:none;">
+        <button id="openDevDashboardBtn" type="button"></button>
+        <button id="toggleDebugTelemetryBtn" type="button"></button>
+        <div id="telemetryDiagnostics"></div>
+      </div>
+    </div>
+
+    <!-- Tab Navigation Bar -->
+    <div class="tab-nav">
+      <button id="tabBtnOverview" type="button" class="tab-btn active">Overview</button>
+      <button id="tabBtnSearch" type="button" class="tab-btn">Search</button>
+      <button id="tabBtnWarmPath" type="button" class="tab-btn">Warm Path</button>
+      <button id="tabBtnGraph" type="button" class="tab-btn">Graph</button>
+    </div>
+
+    <!-- Tab 1: Overview Panel -->
+    <div id="tabPanelOverview" class="tab-panel active">
+      <div class="section">
+        <div class="section-title">Extraction Preview</div>
+        <div style="margin-bottom:10px;">
+          <input id="searchConnectionsInput" type="text" placeholder="Filter extracted connections..." />
+        </div>
+        <div id="output">
+          <div class="status-box">No data extracted yet.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: Search Panel (Command Palette) -->
+    <div id="tabPanelSearch" class="tab-panel">
+      <div class="section">
+        <div class="section-title">Target Search</div>
+        
+        <div class="command-search-wrapper">
+          <span class="command-search-icon">🔍</span>
+          <input id="commandSearchInput" type="text" class="command-search-input" placeholder="Search people, companies, or roles..." />
+        </div>
+
+        <!-- Filters (Synchronized with command input & backend payload) -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;">
+          <div>
+            <label for="company">Company</label>
+            <input id="company" placeholder="Example Corp" />
+          </div>
+          <div>
+            <label for="targetRole">Role</label>
+            <input id="targetRole" placeholder="CFO / SWE" />
+          </div>
+        </div>
+
+        <div style="margin-bottom: 12px;">
+          <label for="dealSide">Deal side</label>
+          <select id="dealSide">
+            <option value="sell_side">Sell-side</option>
+            <option value="buy_side">Buy-side</option>
+          </select>
+        </div>
+
+        <button id="searchTarget" type="button" class="primary-action-btn" style="width: 100%;">
+          Find Target Person
+        </button>
+
+        <div id="targetSearchResults" style="margin-top:12px;"></div>
+      </div>
+    </div>
+
+    <!-- Tab 3: Warm Path Panel -->
+    <div id="tabPanelWarmPath" class="tab-panel">
+      <div class="section">
+        <div class="section-title">Warm Path Finder</div>
+
+        <div id="selectedTargetBadge" style="margin-bottom:12px; padding:10px 12px; border:1px solid rgba(37, 99, 235, 0.3); border-radius:10px; background:rgba(37, 99, 235, 0.12); font-size:12px; display:none;"></div>
+
+        <label for="pathTarget">Target Profile URL</label>
+        <input id="pathTarget" placeholder="https://www.linkedin.com/in/..." style="margin-bottom: 12px;" />
+
+        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <button id="findPath" type="button" class="primary-action-btn" style="flex: 1;">Find Warm Path</button>
+          <button id="explainPath" type="button" class="secondary-action-btn" style="flex: 1;">Explain Path</button>
+        </div>
+
+        <div id="pathResults"></div>
+      </div>
+    </div>
+
+    <!-- Tab 4: Graph Panel -->
+    <div id="tabPanelGraph" class="tab-panel">
+      <div class="section">
+        <div class="section-title">Graph Actions</div>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <button id="viewGraph" type="button" class="primary-action-btn">View Network Graph ↗</button>
+          <button id="refresh" type="button" class="secondary-action-btn">Refresh Data</button>
+          <button id="searchNetwork" type="button" class="secondary-action-btn">Search Network</button>
+          <button id="extract" type="button" class="secondary-action-btn" style="display:none;">Read Page DOM</button>
+          <button id="send" type="button" class="secondary-action-btn" style="display:none;">Send Network</button>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- Tab 3: Warm Path Panel -->
-  <div id="tabPanelWarmPath" class="tab-panel">
-    <div class="section">
-      <div class="section-title">Warm Path Finder</div>
-
-      <div id="selectedTargetBadge" style="margin-bottom:12px; padding:10px 12px; border:1px solid rgba(37, 99, 235, 0.3); border-radius:10px; background:rgba(37, 99, 235, 0.12); font-size:12px; display:none;"></div>
-
-      <label for="pathTarget">Target Profile URL</label>
-      <input id="pathTarget" placeholder="https://www.linkedin.com/in/..." style="margin-bottom: 12px;" />
-
-      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-        <button id="findPath" type="button" class="primary-action-btn" style="flex: 1;">Find Warm Path</button>
-        <button id="explainPath" type="button" class="secondary-action-btn" style="flex: 1;">Explain Path</button>
-      </div>
-
-      <div id="pathResults"></div>
-    </div>
-  </div>
-
-  <!-- Tab 4: Graph Panel -->
-  <div id="tabPanelGraph" class="tab-panel">
-    <div class="section">
-      <div class="section-title">Graph Actions</div>
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        <button id="viewGraph" type="button" class="primary-action-btn">View Network Graph ↗</button>
-        <button id="refresh" type="button" class="secondary-action-btn">Refresh Data</button>
-        <button id="searchNetwork" type="button" class="secondary-action-btn">Search Network</button>
-        <button id="extract" type="button" class="secondary-action-btn" style="display:none;">Read Page DOM</button>
-        <button id="send" type="button" class="secondary-action-btn" style="display:none;">Send Network</button>
-      </div>
-    </div>
-  </div>
-
+  <script src="auth.js"></script>
+  <script src="cloud_sync.js"></script>
   <script src="popup.js"></script>
 
 </body>

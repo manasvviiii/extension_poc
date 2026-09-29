@@ -170,10 +170,25 @@ def build_graph_from_network(
 
 
 class GraphService:
-    """Encapsulates graph construction, caching, retrieval, path finding, and visualization."""
+    """Encapsulates graph construction, caching, retrieval, path finding, and visualization via GraphRepository."""
 
-    def __init__(self, cache: TenantGraphCache | None = None) -> None:
-        self.cache = cache if cache is not None else TenantGraphCache()
+    def __init__(self, repository: Any | None = None, cache: TenantGraphCache | None = None) -> None:
+        from repositories.repository_provider import get_graph_repository
+        self.repository = repository if repository is not None else get_graph_repository()
+        if hasattr(self.repository, "cache"):
+            self._cache = self.repository.cache
+        else:
+            self._cache = cache if cache is not None else TenantGraphCache()
+
+    @property
+    def cache(self) -> TenantGraphCache:
+        return self._cache
+
+    @cache.setter
+    def cache(self, val: TenantGraphCache) -> None:
+        self._cache = val
+        if hasattr(self.repository, "cache"):
+            self.repository.cache = val
 
     def get_owner_graph(
         self,
@@ -184,21 +199,24 @@ class GraphService:
         context = auth_context if isinstance(auth_context, AuthContext) else current_context()
         if context is not None and context.authenticated:
             require_owner_access(context, owner_id)
-        tenant_id = context.tenant_id if isinstance(context, AuthContext) and context.authenticated else None
 
-        cached_graph = self.cache.get_graph(tenant_id, owner_id)
+        cached_graph = self.repository.get_graph(owner_id, auth_context=context)
         if cached_graph is not None and cached_graph.number_of_nodes() > 0:
             security_audit("graph_cache_hit", "success", {"owner_id": owner_id})
             return cached_graph
 
         security_audit("graph_cache_miss", "info", {"owner_id": owner_id})
+        network_data = None
         if load_network_fn is not None:
             network_data = load_network_fn(owner_id, context)
-            if network_data is not None and (network_data.get("connections") or network_data.get("relationship_evidence")):
-                graph = build_graph_from_network(owner_id, network_data)
-                self.replace_graph(owner_id, graph, auth_context=context)
-                security_audit("graph_rebuild", "completed", {"owner_id": owner_id, "nodes": graph.number_of_nodes()})
-                return graph
+        if network_data is None:
+            network_data = self.repository.get_network(owner_id)
+
+        if network_data is not None and (network_data.get("connections") or network_data.get("relationship_evidence")):
+            graph = build_graph_from_network(owner_id, network_data)
+            self.replace_graph(owner_id, graph, auth_context=context)
+            security_audit("graph_rebuild", "completed", {"owner_id": owner_id, "nodes": graph.number_of_nodes()})
+            return graph
 
         raise HTTPException(
             status_code=404,
@@ -218,8 +236,11 @@ class GraphService:
         """
         Build direct KNOWS and 2nd degree OBSERVED_MUTUAL edges into a graph for owner.
         """
-        if network_data is None and load_network_fn is not None:
-            network_data = load_network_fn(owner_id, auth_context)
+        if network_data is None:
+            if load_network_fn is not None:
+                network_data = load_network_fn(owner_id, auth_context)
+            if not network_data:
+                network_data = self.repository.get_network(owner_id)
         if not network_data:
             network_data = {"owner_id": owner_id, "connections": [], "relationship_evidence": []}
         return build_graph_from_network(owner_id, network_data)
@@ -234,9 +255,7 @@ class GraphService:
         Delete previous graph for owner and insert new nodes + edges into repository/cache.
         """
         context = auth_context if isinstance(auth_context, AuthContext) else current_context()
-        tenant_id = context.tenant_id if isinstance(context, AuthContext) and context.authenticated else None
-        self.cache.invalidate(tenant_id, owner_id)
-        self.cache.set_graph(tenant_id, owner_id, graph)
+        self.repository.replace_graph(owner_id, graph, auth_context=context)
         security_audit("graph_replaced", "completed", {
             "owner_id": owner_id,
             "nodes": graph.number_of_nodes(),
@@ -250,8 +269,7 @@ class GraphService:
         auth_context: AuthContext | None = None,
     ) -> None:
         context = auth_context if isinstance(auth_context, AuthContext) else current_context()
-        tenant_id = context.tenant_id if isinstance(context, AuthContext) and context.authenticated else None
-        self.cache.invalidate(tenant_id, owner_id)
+        self.repository.invalidate_graph(owner_id, auth_context=context)
         security_audit("graph_cache_invalidated", "completed", {"owner_id": owner_id})
 
     def rebuild_owner_graph(

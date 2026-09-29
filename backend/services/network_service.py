@@ -4,25 +4,20 @@ from typing import Any
 from auth.context import AuthContext
 
 
+from repositories.repository_provider import get_graph_repository
+
+
 def save_connections(
     owner_id: str,
     connections: list[dict[str, Any]],
     auth_context: AuthContext | None = None,
 ) -> dict[str, Any]:
     """
-    Save or update direct connection records for the canonical owner.
+    Save or update direct connection records for the canonical owner using GraphRepository.
     """
-    from main import load_network, save_network
-
-    existing = load_network(owner_id, auth_context) or {
-        "owner_id": owner_id,
-        "connections": [],
-        "relationship_evidence": [],
-    }
-    existing["connections"] = connections
-    existing["connection_count"] = len(connections)
-    save_network(owner_id, existing, auth_context)
-    return existing
+    repo = get_graph_repository()
+    repo.save_people(owner_id, connections)
+    return repo.get_network(owner_id) or {"owner_id": owner_id, "connections": connections, "relationship_evidence": []}
 
 
 def save_relationship_evidence(
@@ -31,19 +26,11 @@ def save_relationship_evidence(
     auth_context: AuthContext | None = None,
 ) -> dict[str, Any]:
     """
-    Save or update 2nd degree relationship evidence records for the canonical owner.
+    Save or update 2nd degree relationship evidence records for the canonical owner using GraphRepository.
     """
-    from main import load_network, save_network
-
-    existing = load_network(owner_id, auth_context) or {
-        "owner_id": owner_id,
-        "connections": [],
-        "relationship_evidence": [],
-    }
-    existing["relationship_evidence"] = evidence
-    existing["relationship_evidence_count"] = len(evidence)
-    save_network(owner_id, existing, auth_context)
-    return existing
+    repo = get_graph_repository()
+    repo.save_relationships(owner_id, evidence)
+    return repo.get_network(owner_id) or {"owner_id": owner_id, "connections": [], "relationship_evidence": evidence}
 
 
 def load_network_service(
@@ -51,8 +38,7 @@ def load_network_service(
     auth_context: AuthContext | None = None,
 ) -> dict[str, Any] | None:
     """
-    Retrieve stored raw network connections and evidence for owner.
+    Retrieve stored raw network connections and evidence for owner using GraphRepository.
     """
-    from main import load_network
-
-    return load_network(owner_id, auth_context)
+    repo = get_graph_repository()
+    return repo.get_network(owner_id)

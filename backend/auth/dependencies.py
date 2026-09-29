@@ -7,7 +7,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from datetime import datetime
 from fastapi import Header, HTTPException
+from pydantic import BaseModel
 
 from .context import AuthContext, CURRENT_CONTEXT, compatibility_context
 from .audit import security_audit
@@ -123,3 +125,45 @@ def context_or_compatibility(value: object, owner_id: str) -> AuthContext:
     if isinstance(value, AuthContext):
         return value
     return compatibility_context(owner_id)
+
+
+class LocalUser(BaseModel):
+    id: str = "local_user"
+    name: str = "WarmGraph User"
+    provider: str = "local"
+    created_at: str | None = None
+    last_active: str | None = None
+
+
+def get_current_user(
+    x_warmgraph_session: str | None = Header(default=None),
+    x_warmgraph_dev_token: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> LocalUser:
+    """
+    Cloud-ready local authentication dependency for WarmGraph.
+    Reads X-WarmGraph-Session (or Authorization / X-WarmGraph-Dev-Token) header
+    and resolves the authenticated local_user profile.
+    Header value format: wg_local_<uuid>
+    """
+    token = x_warmgraph_session or x_warmgraph_dev_token
+    if not token and authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+
+    user_id = "local_user"
+    if token:
+        if token.startswith("wg_local_"):
+            raw_uuid = token[len("wg_local_"):]
+            if raw_uuid:
+                user_id = raw_uuid if raw_uuid.startswith("wg_") else f"wg_{raw_uuid}"
+        elif token.startswith("wg_"):
+            user_id = token
+
+    now = datetime.utcnow().isoformat() + "Z"
+    return LocalUser(
+        id=user_id,
+        name="WarmGraph User",
+        provider="local",
+        created_at=now,
+        last_active=now
+    )

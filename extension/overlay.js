@@ -407,6 +407,30 @@
         box-shadow: 0 6px 24px rgba(56, 189, 248, 0.5);
       }
 
+      .warmgraph-cta-container { display: flex; gap: 8px; }
+      .warmgraph-cta-secondary {
+        flex: 0 0 auto;
+        min-height: 42px;
+        padding: 0 14px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #e2e8f0;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 12px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .warmgraph-cta-finish { flex: 1; }
+      .warmgraph-extraction-controls {
+        display: none;
+        gap: 8px;
+        margin: 0 0 14px;
+      }
+      .warmgraph-extraction-controls .warmgraph-cta-finish { flex: 1; }
+
       /* Minimized Pill View */
       .warmgraph-overlay-pill {
         display: flex;
@@ -457,6 +481,16 @@
         border: 1px solid rgba(245, 158, 11, 0.3);
       }
 
+      @keyframes warmgraphIndeterminate {
+        0%   { background-position: 200% center; }
+        100% { background-position: -200% center; }
+      }
+
+      @keyframes warmgraphRingSpin {
+        from { transform: rotate(-90deg); }
+        to   { transform: rotate(270deg); }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         .warmgraph-overlay-card, .warmgraph-overlay-pill, .warmgraph-progress-bar, .warmgraph-ring-circle, .warmgraph-status-dot {
           animation: none !important;
@@ -488,12 +522,15 @@
       };
     }
 
+    const engineType = status.engineType || status.engine_type || (status.page_url && status.page_url.includes("/search/") ? "PEOPLE_SEARCH" : "CONNECTIONS");
+    const isPeopleSearch = engineType === "PEOPLE_SEARCH";
     const state = status.state || "idle";
     const collected = status.extractedConnections !== undefined ? status.extractedConnections : (status.collected_count !== undefined ? status.collected_count : (status.connections ? status.connections.length : 0));
     const actual = status.actualProfiles !== undefined ? status.actualProfiles : (status.expected_total !== undefined ? status.expected_total : 0);
-    const isComplete = actual > 0 && collected >= actual;
+    const isComplete = state === "completed" || (actual > 0 && collected >= actual);
     const syncStatus = status.sync_status || status.syncStatus || "idle";
     const isError = state === "failed" || state === "error" || (status.error && status.error.length > 0);
+    const pagLabel = status.paginationLabel || (status.currentPage ? `Page ${status.currentPage}` : (status.page_count ? `Page ${status.page_count}` : "Page 1"));
 
     const pausedStateData = {
       stateKey: "interrupted",
@@ -517,14 +554,35 @@
     }
 
     switch (state) {
+      case "connections_ready":
+        return {
+          stateKey: "resting",
+          badgeText: "Workspace Ready",
+          badgeClass: "warmgraph-status-resting",
+          title: "Workspace Ready",
+          desc: `${status.totalConnections || actual || 0} Total Connections`,
+          activities: [
+            { icon: "✓", text: "Owner identity resolved", status: "done" },
+            { icon: "✓", text: `${status.totalConnections || actual || 0} Total Connections mapped`, status: "done" },
+            { icon: "○", text: "Waiting for LinkedIn filters...", status: "active" }
+          ],
+          showReassurance: false,
+          showCta: false,
+          syncBadgeText: null
+        };
+
       case "preparing":
         return {
           stateKey: "preparing",
           badgeText: "Preparing",
           badgeClass: "warmgraph-status-preparing",
-          title: "Preparing your network",
-          desc: "WarmGraph is getting your connection page ready so it can build your personal network map.",
-          activities: [
+          title: isPeopleSearch ? "Preparing Search Index" : "Preparing your network",
+          desc: isPeopleSearch ? "Preparing LinkedIn People Search extraction..." : "WarmGraph is getting your connection page ready so it can build your personal network map.",
+          activities: isPeopleSearch ? [
+            { icon: "✓", text: "Filter network=F confirmed", status: "done" },
+            { icon: "✓", text: "Pagination engine loaded", status: "done" },
+            { icon: "○", text: "Initializing Page 1 scan", status: "active" }
+          ] : [
             { icon: "✓", text: "Connections collected", status: "done" },
             { icon: "✓", text: "Relationship signals indexed", status: "done" },
             { icon: "○", text: "Verifying network integrity", status: "active" }
@@ -534,33 +592,41 @@
           syncBadgeText: null
         };
 
+      case "navigating":
       case "acquiring":
       case "collecting":
       case "resumed":
-        return {
-          stateKey: "collecting",
-          badgeText: "Building",
-          badgeClass: "warmgraph-status-building",
-          title: "Building your network",
-          desc: "We're organizing your professional connections so you can discover warm introductions later.",
-          activities: [
-            { icon: "✓", text: "Connections collected", status: "done" },
-            { icon: "✓", text: "Relationship signals indexed", status: "done" },
-            { icon: "○", text: "Verifying network integrity", status: "active" }
-          ],
-          showReassurance: true,
-          showCta: false,
-          syncBadgeText: null
-        };
-
       case "waiting":
       case "waiting_for_content":
+        if (isPeopleSearch) {
+          const isNav = state === "navigating" || status.isNavigating;
+          const currentLabel = status.navigatingLabel || pagLabel;
+          const activeText = isNav
+            ? (status.statusMessage || "Navigating to next results...")
+            : "Hover Enrichment Active";
+
+          return {
+            stateKey: "collecting",
+            badgeText: "🟢 Auto Extracting",
+            badgeClass: "warmgraph-status-building",
+            title: "Auto Extracting",
+            desc: isNav ? `${collected} Profiles Indexed` : `${collected} Profiles Indexed • ${currentLabel}`,
+            activities: [
+              { icon: "✓", text: `${collected} Profiles Indexed`, status: "done" },
+              { icon: "✓", text: currentLabel, status: "done" },
+              { icon: "○", text: activeText, status: "active" }
+            ],
+            showReassurance: true,
+            showCta: false,
+            syncBadgeText: null
+          };
+        }
         return {
-          stateKey: "waiting",
-          badgeText: "Building",
+          stateKey: "collecting",
+          badgeText: "🟢 Auto Extracting",
           badgeClass: "warmgraph-status-building",
-          title: "Loading more connections",
-          desc: "WarmGraph is waiting for the next part of your network to appear.",
+          title: "Auto Extracting",
+          desc: "Extracting connections automatically...",
           activities: [
             { icon: "✓", text: "Connections collected", status: "done" },
             { icon: "✓", text: "Relationship signals indexed", status: "done" },
@@ -576,12 +642,12 @@
           stateKey: "settling",
           badgeText: "Verifying",
           badgeClass: "warmgraph-status-verifying",
-          title: "Finishing your network",
-          desc: "We're checking the connections we've collected and making sure your network is complete.",
+          title: "Finishing network extraction",
+          desc: "We're verifying extracted records and checking page completeness.",
           activities: [
-            { icon: "✓", text: "Connections collected", status: "done" },
-            { icon: "✓", text: "Relationship signals indexed", status: "done" },
-            { icon: "○", text: "Verifying network integrity", status: "active" }
+            { icon: "✓", text: `${collected} Profiles Indexed`, status: "done" },
+            { icon: "✓", text: pagLabel, status: "done" },
+            { icon: "○", text: "Verifying graph integrity", status: "active" }
           ],
           showReassurance: true,
           showCta: false,
@@ -598,37 +664,66 @@
           return pausedStateData;
         }
 
-        let syncBadge = null;
-        const completeActivities = [
-          { icon: "✓", text: "Connections collected", status: "done" },
-          { icon: "✓", text: "Relationship signals indexed", status: "done" },
-          { icon: "✓", text: "Network verified", status: "done" },
-          { icon: "✓", text: "Saved to WarmGraph", status: "done" }
-        ];
-        if (syncStatus === "synced") {
-          syncBadge = { text: "✓ Saved to WarmGraph", type: "synced" };
-        } else if (syncStatus === "syncing") {
-          syncBadge = { text: "● Saving to WarmGraph...", type: "pending" };
-        } else if (syncStatus === "failed" || syncStatus === "blocked") {
-          syncBadge = { text: "⚠️ Network saved locally (Sync pending)", type: "pending" };
+        if (isPeopleSearch) {
+          return {
+            stateKey: "resting",
+            badgeText: "Ready",
+            badgeClass: "warmgraph-status-resting",
+            title: "Workspace Up To Date",
+            desc: `${collected} Total Profiles Indexed`,
+            activities: [
+              { icon: "✓", text: `${collected} Total Profiles Indexed`, status: "done" },
+              { icon: "✓", text: `${status.page_count || status.currentPage || 1} Pages Processed`, status: "done" },
+              { icon: "✓", text: "Saved to WarmGraph", status: "done" },
+              { icon: "✓", text: "Last Sync: Just now", status: "done" }
+            ],
+            showReassurance: false,
+            showCta: false,
+            ctaText: null,
+            syncBadgeText: null
+          };
         }
 
         return {
           stateKey: "resting",
-          badgeText: "Resting",
+          badgeText: "✓ Workspace Up To Date",
           badgeClass: "warmgraph-status-resting",
-          title: "You're all caught up ✨",
-          desc: "No new connections found. Your network is fully synced.",
-          activities: completeActivities,
+          title: "Workspace Up To Date",
+          desc: `${collected} Connections Indexed`,
+          activities: [
+            { icon: "✓", text: "Connections collected", status: "done" },
+            { icon: "✓", text: "Relationship signals indexed", status: "done" },
+            { icon: "✓", text: "Network verified", status: "done" },
+            { icon: "✓", text: "Saved to WarmGraph", status: "done" }
+          ],
           showReassurance: false,
-          showCta: true,
-          ctaText: "Sync Again",
+          showCta: false,
+          ctaText: null,
           syncBadgeText: null
         };
 
       case "idle":
       default:
         if (isComplete) {
+          if (isPeopleSearch) {
+            return {
+              stateKey: "resting",
+              badgeText: "✓ Workspace Up To Date",
+              badgeClass: "warmgraph-status-resting",
+              title: "Workspace Up To Date",
+              desc: `${collected} Total Profiles Indexed`,
+              activities: [
+                { icon: "✓", text: `${collected} Total Profiles Indexed`, status: "done" },
+                { icon: "✓", text: `${status.page_count || status.currentPage || 1} Pages Processed`, status: "done" },
+                { icon: "✓", text: "Saved to WarmGraph", status: "done" },
+                { icon: "✓", text: "Last Sync: Just now", status: "done" }
+              ],
+              showReassurance: false,
+              showCta: false,
+              ctaText: null,
+              syncBadgeText: null
+            };
+          }
           return {
             stateKey: "resting",
             badgeText: "Resting",
@@ -642,8 +737,8 @@
               { icon: "✓", text: "Saved to WarmGraph", status: "done" }
             ],
             showReassurance: false,
-            showCta: true,
-            ctaText: "Sync Again",
+            showCta: false,
+            ctaText: null,
             syncBadgeText: null
           };
         } else if (collected > 0) {
@@ -655,7 +750,7 @@
           badgeText: "Preparing",
           badgeClass: "warmgraph-status-preparing",
           title: "Preparing your network",
-          desc: "WarmGraph is getting your connection page ready so it can build your personal network map.",
+          desc: "WarmGraph is getting ready so it can build your personal network map.",
           activities: [
             { icon: "✓", text: "Connections collected", status: "done" },
             { icon: "✓", text: "Relationship signals indexed", status: "done" },
@@ -782,6 +877,11 @@
               </div>
             </div>
 
+            <div id="warmgraph-extraction-controls" class="warmgraph-extraction-controls">
+              <button id="warmgraph-btn-finish-sync" class="warmgraph-cta-btn warmgraph-cta-finish" title="Stop extraction and sync profiles collected so far">Finish &amp; Sync</button>
+              <button id="warmgraph-btn-pause" class="warmgraph-cta-secondary">Pause</button>
+            </div>
+
             <!-- Checklist Activities -->
             <div id="warmgraph-activity-list" class="warmgraph-activity-list"></div>
 
@@ -833,6 +933,8 @@
       const closeBtn = this.container.querySelector("#warmgraph-btn-close");
       const pill = this.pillEl;
       const ctaBtn = this.container.querySelector("#warmgraph-btn-open-workspace");
+      const finishBtn = this.container.querySelector("#warmgraph-btn-finish-sync");
+      const pauseBtn = this.container.querySelector("#warmgraph-btn-pause");
       const header = this.container.querySelector("#warmgraph-overlay-header");
 
       if (minBtn) {
@@ -858,19 +960,41 @@
       if (ctaBtn) {
         ctaBtn.addEventListener("click", () => {
           const btnText = (ctaBtn.textContent || "").trim();
-          const targetUrl = "https://www.linkedin.com/mynetwork/invite-connect/connections/";
-          if (btnText === "Sync Again") {
+          const targetUrl = "https://www.linkedin.com/search/results/people/?origin=MEMBER_PROFILE_CANNED_SEARCH&network=%5B%22F%22%5D";
+          if (btnText === "Pause") {
+            if (window.acquisitionSession && typeof window.acquisitionSession.pause === "function") {
+              window.acquisitionSession.pause();
+            }
+          } else if (btnText === "Sync Again") {
             console.log("[OVERLAY] Sync Again clicked");
+            if (typeof window !== "undefined" && window.acquisitionSession) {
+              if (window.__warmgraphAcquisitionRunning || window.acquisitionSession.isRunning) {
+                window.acquisitionSession.state = "acquiring";
+                window.acquisitionSession.checkpointSessionSync();
+              } else {
+                window.acquisitionSession.reconcileNetworkWithDom(true).then(rec => {
+                  if (rec.action !== "skip") {
+                    window.acquisitionSession.start();
+                  } else {
+                    window.acquisitionSession.scanCurrentPageForUnseen();
+                    window.acquisitionSession.state = "resting";
+                    window.acquisitionSession.checkpointSessionSync();
+                    window.acquisitionSession.autoSyncToBackend();
+                  }
+                });
+              }
+            }
             if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
               chrome.runtime.sendMessage({
-                type: "SYNC_NETWORK"
+                type: "SYNC_NETWORK",
+                action: "SYNC_NETWORK"
               });
             }
             renderOverlayState("building");
           } else if (btnText === "Continue Sync") {
             const isConn = (typeof window !== "undefined" && window.location && (
+              window.location.href.includes("/search/results/people") ||
               window.location.pathname.includes("/mynetwork/invite-connect/connections/") ||
-              window.location.href.includes("/mynetwork/invite-connect/connections") ||
               window.location.href.includes("connections.html")
             ));
 
@@ -878,18 +1002,17 @@
               window.dispatchEvent(new CustomEvent("warmgraph:continue_sync"));
             }
 
-            if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
+            const isPeopleSearch = typeof window !== "undefined" && window.location &&
+              window.location.pathname.includes("/search/results/people");
+            if (isPeopleSearch && window.acquisitionSession && typeof window.acquisitionSession.resume === "function") {
+              window.acquisitionSession.resume();
+            } else if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
               chrome.runtime.sendMessage({ action: "RESUME_EXTRACTION_SESSION", url: targetUrl }, () => {});
             }
 
             if (!isConn) {
               if (typeof window !== "undefined" && window.location) {
                 window.location.href = targetUrl;
-              }
-            } else {
-              if (typeof window !== "undefined" && window.acquisitionSession) {
-                window.acquisitionSession.state = "acquiring";
-                window.acquisitionSession.start();
               }
             }
           } else {
@@ -907,6 +1030,26 @@
               window.open("developer_dashboard.html", "_blank");
             }
           }
+        });
+      }
+
+      if (finishBtn) {
+        finishBtn.addEventListener("click", async () => {
+          if (!window.acquisitionSession || typeof window.acquisitionSession.finishAndSync !== "function") return;
+          finishBtn.disabled = true;
+          finishBtn.textContent = "Finishing & Syncing…";
+          try {
+            await window.acquisitionSession.finishAndSync();
+          } finally {
+            finishBtn.disabled = false;
+            finishBtn.textContent = "Finish & Sync";
+          }
+        });
+      }
+
+      if (pauseBtn) {
+        pauseBtn.addEventListener("click", () => {
+          window.acquisitionSession?.pause?.();
         });
       }
 
@@ -1004,14 +1147,24 @@
       // NEVER recalculate actualProfiles or progressPercent here.
       // ────────────────────────────────────────────────────────────────────────
       const rawState = status.state || "idle";
-      const extracted = status.extractedConnections !== undefined
+      const isPausedStatus = rawState === "paused" || rawState === "interrupted";
+      const reportedExtracted = status.extractedConnections !== undefined
         ? status.extractedConnections
         : (status.collected_count !== undefined ? status.collected_count : 0);
+      const savedExtracted = Math.max(
+        Number(status.extracted_count) || 0,
+        Number(status.lastKnownExtractedConnections) || 0,
+        Array.isArray(status.known_profile_urls) ? status.known_profile_urls.length : 0
+      );
+      const extracted = isPausedStatus ? Math.max(reportedExtracted, savedExtracted) : reportedExtracted;
 
       // Trust actualProfiles from content.js — NEVER re-derive from extracted
-      const actual = status.actualProfiles !== undefined && status.actualProfiles > 0
+      const reportedActual = status.actualProfiles !== undefined && status.actualProfiles > 0
         ? status.actualProfiles
-        : (status.totalConnections !== undefined ? status.totalConnections : (status.expected_total || 0));
+        : (Number(status.lastKnownActualProfiles) > 0
+          ? Number(status.lastKnownActualProfiles)
+          : (status.totalConnections !== undefined ? status.totalConnections : (status.expected_total || 0)));
+      const actual = isPausedStatus ? Math.max(reportedActual, extracted) : reportedActual;
 
       const total = status.totalConnections !== undefined ? status.totalConnections : (status.expected_total || actual);
 
@@ -1028,8 +1181,13 @@
       const countdown = status.countdownSeconds !== undefined ? status.countdownSeconds
         : (status.countdown_seconds !== undefined ? status.countdown_seconds : 0);
 
+      const engineType = status.engineType || status.engine_type || (status.page_url && status.page_url.includes("/search/") ? "PEOPLE_SEARCH" : "CONNECTIONS");
+      const isPeopleSearch = engineType === "PEOPLE_SEARCH";
+
       this.currentStatus = {
         ...status,
+        engineType,
+        engine_type: engineType,
         state,
         extractedConnections: extracted,
         actualProfiles: actual,
@@ -1059,14 +1217,13 @@
         state === "paused" ||
         state === "failed" ||
         state === "error" ||
-        extracted > 0
+        state === "syncing" ||
+        state === "idle" ||
+        extracted >= 0
       );
 
       if (shouldShow) {
         this.container.style.display = "block";
-      } else {
-        this.container.style.display = "none";
-        return;
       }
 
       const mapped = getMappedStateData(this.currentStatus);
@@ -1093,6 +1250,7 @@
       const reassuranceEl = this.container.querySelector("#warmgraph-reassurance");
       const syncContainerEl = this.container.querySelector("#warmgraph-sync-badge-container");
       const ctaContainerEl = this.container.querySelector("#warmgraph-cta-container");
+      const extractionControlsEl = this.container.querySelector("#warmgraph-extraction-controls");
       const pillCountEl = this.container.querySelector("#warmgraph-pill-count");
 
       // Status pill update
@@ -1111,36 +1269,85 @@
       if (countEl) countEl.textContent = String(this.currentStatus.extractedConnections);
       if (labelEl) labelEl.textContent = this.currentStatus.extractedConnections === 1 ? "Connection mapped" : "Connections mapped";
 
-      // Circular progress & progress bar (uses exact same this.currentStatus.progressPercent)
+      // Circular progress & ring are updated below in the engine-aware section.
       const pct = this.currentStatus.progressPercent;
-      if (heroPercentEl) heroPercentEl.textContent = `${pct}%`;
-      if (heroRingCircle) {
-        const C = 163.36; // Circumference for r=26
-        const strokeDashoffset = C - (pct / 100) * C;
-        heroRingCircle.style.strokeDashoffset = `${strokeDashoffset.toFixed(2)}px`;
-      }
 
-      // Hero Metric (MUST be displayLeft / displayRight = extractedConnections / actualProfiles)
-      const displayLeft = this.currentStatus.extractedConnections;
-      const displayRight = this.currentStatus.actualProfiles;
-      if (heroMetricEl) {
-        if (displayRight > 0) {
-          heroMetricEl.textContent = `${displayLeft} / ${displayRight}`;
+      // Hero Title
+      const heroTitleEl = this.container.querySelector(".warmgraph-hero-title");
+      if (heroTitleEl) {
+        if (state === "connections_ready") {
+          heroTitleEl.textContent = "Workspace Ready";
+        } else if (isPeopleSearch) {
+          heroTitleEl.textContent = "Profiles Indexed";
         } else {
-          heroMetricEl.textContent = `${displayLeft}`;
+          heroTitleEl.textContent = "Network mapped";
         }
       }
 
-      const remaining = Math.max(0, displayRight - displayLeft);
-
-      // Hero Subtitle (Show "All LinkedIn connections mapped" when complete)
-      if (heroRemainingEl) {
-        if (state === "resting" || state === "completed" || displayLeft === displayRight) {
-          heroRemainingEl.textContent = "All LinkedIn connections mapped";
-        } else if (displayRight > 0) {
-          heroRemainingEl.textContent = `${remaining} remaining`;
+      // Hero Metric
+      const displayLeft = this.currentStatus.extractedConnections;
+      const displayRight = this.currentStatus.actualProfiles;
+      const isActiveExtraction = isPeopleSearch && (
+        state === "acquiring" || state === "collecting" || state === "resumed" ||
+        state === "waiting" || state === "waiting_for_content" || state === "settling" || state === "preparing" || state === "navigating"
+      );
+      if (heroMetricEl) {
+        if (state === "connections_ready") {
+          heroMetricEl.textContent = `${this.currentStatus.totalConnections || actual || 0} Total Connections`;
+        } else if (isPeopleSearch) {
+          if (state === "resting" || state === "completed") {
+            heroMetricEl.textContent = `${displayLeft} Profiles Indexed`;
+          } else {
+            heroMetricEl.textContent = `${displayLeft}`;
+          }
         } else {
-          heroRemainingEl.textContent = "Quietly mapping network";
+          if (displayRight > 0) {
+            heroMetricEl.textContent = `${displayLeft} / ${displayRight}`;
+          } else {
+            heroMetricEl.textContent = `${displayLeft}`;
+          }
+        }
+      }
+
+      const remaining = (state === "paused" || state === "interrupted") && Number.isFinite(Number(this.currentStatus.remainingProfiles))
+        ? Number(this.currentStatus.remainingProfiles)
+        : Math.max(0, displayRight - displayLeft);
+
+      // Hero Subtitle
+      if (heroRemainingEl) {
+        if (state === "connections_ready") {
+          heroRemainingEl.textContent = "Waiting for LinkedIn filters...";
+        } else if (isPeopleSearch) {
+          if (state === "resting" || state === "completed") {
+            const totalConn = this.currentStatus.totalConnections ? `${this.currentStatus.totalConnections} Total Connections • ` : "";
+            heroRemainingEl.textContent = `${totalConn}Last Sync: Just now`;
+          } else if (state === "navigating" || this.currentStatus.isNavigating) {
+            const navLabel = this.currentStatus.navigatingLabel || pagLabel;
+            const statusMsg = this.currentStatus.statusMessage || "➡ Navigating to next page...";
+            heroRemainingEl.textContent = `${navLabel} • ${statusMsg}`;
+          } else if (state === "paused" || state === "interrupted") {
+            const pageLabel = this.currentStatus.paginationLabel || (this.currentStatus.currentPage
+              ? `Page ${this.currentStatus.currentPage} of ${this.currentStatus.totalPages || 1}`
+              : "Progress saved");
+            heroRemainingEl.textContent = `${pageLabel} • Progress saved`;
+          } else {
+            const pagLabel = this.currentStatus.paginationLabel || (this.currentStatus.currentPage ? `Page ${this.currentStatus.currentPage}` : "Page 1");
+            heroRemainingEl.textContent = `${pagLabel} • Hover Enrichment Active`;
+          }
+        } else {
+          if (state === "resting" || state === "completed" || displayLeft === displayRight) {
+            heroRemainingEl.textContent = "All LinkedIn connections mapped";
+          } else if (this.currentStatus.estimatedRemainingMs && this.currentStatus.estimatedRemainingMs > 0) {
+            const totalSec = Math.round(this.currentStatus.estimatedRemainingMs / 1000);
+            const min = Math.floor(totalSec / 60);
+            const sec = totalSec % 60;
+            const timeStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+            heroRemainingEl.textContent = `Estimated remaining: ${timeStr}`;
+          } else if (displayRight > 0) {
+            heroRemainingEl.textContent = `${remaining} remaining`;
+          } else {
+            heroRemainingEl.textContent = "Quietly mapping network";
+          }
         }
       }
 
@@ -1162,17 +1369,54 @@
         }
       }
 
-      // Progress bar fill & label (uses exact same pct!)
+      // Progress bar fill & label
+      // For PEOPLE_SEARCH during active extraction: use indeterminate animated bar (no %)
       if (progressLabelEl) {
-        progressLabelEl.textContent = `${pct}% Complete`;
+        if (isActiveExtraction) {
+          progressLabelEl.textContent = `${displayLeft} indexed`;
+        } else {
+          progressLabelEl.textContent = `${pct}% Complete`;
+        }
       }
 
       if (progressBar) {
-        if (state === "resting" || state === "completed" || displayLeft > 0 || state === "acquiring" || state === "collecting" || state === "waiting" || state === "settling" || state === "preparing") {
+        if (isActiveExtraction) {
+          // Indeterminate: animate the bar using a sliding highlight effect
+          progressBar.style.width = "100%";
+          progressBar.style.backgroundSize = "200% 100%";
+          progressBar.style.animation = "warmgraphIndeterminate 1.6s linear infinite";
+          if (progressContainer) progressContainer.style.display = "block";
+        } else if (state === "resting" || state === "completed" || displayLeft > 0 || state === "acquiring" || state === "collecting" || state === "waiting" || state === "settling" || state === "preparing") {
           progressBar.style.width = `${pct}%`;
+          progressBar.style.animation = "";
           if (progressContainer) progressContainer.style.display = "block";
         } else {
+          progressBar.style.animation = "";
           if (progressContainer) progressContainer.style.display = "none";
+        }
+      }
+
+      // Circular progress ring
+      // For PEOPLE_SEARCH during active extraction: spin the ring (indeterminate)
+      if (heroRingCircle) {
+        const C = 163.36; // Circumference for r=26
+        if (isActiveExtraction) {
+          // Show ~25% filled, rotating — indeterminate visual
+          heroRingCircle.style.strokeDashoffset = `${(C * 0.75).toFixed(2)}px`;
+          heroRingCircle.style.animation = "warmgraphRingSpin 2s linear infinite";
+        } else {
+          const strokeDashoffset = C - (pct / 100) * C;
+          heroRingCircle.style.strokeDashoffset = `${strokeDashoffset.toFixed(2)}px`;
+          heroRingCircle.style.animation = "";
+        }
+      }
+
+      // Ring center text
+      if (heroPercentEl) {
+        if (isActiveExtraction) {
+          heroPercentEl.textContent = `${displayLeft}`;
+        } else {
+          heroPercentEl.textContent = `${pct}%`;
         }
       }
 
@@ -1204,13 +1448,14 @@
 
       // Reassurance copy
       if (reassuranceEl) {
+        const pagLabel = this.currentStatus.paginationLabel || "";
         if (state === "paused" || state === "interrupted") {
           reassuranceEl.style.display = "none";
         } else if (state !== "completed" && remaining > 0 && countdown > 0) {
-          reassuranceEl.textContent = `${remaining} remaining • Next sync in ${countdown}s`;
+          reassuranceEl.textContent = pagLabel ? `${pagLabel} • ${remaining} remaining` : `${remaining} remaining • Next sync in ${countdown}s`;
           reassuranceEl.style.display = "block";
         } else if (mapped.showReassurance) {
-          reassuranceEl.textContent = "You can keep browsing LinkedIn normally.";
+          reassuranceEl.textContent = pagLabel ? `${pagLabel} • Auto Extracting` : "You can keep browsing LinkedIn normally.";
           reassuranceEl.style.display = "block";
         } else {
           reassuranceEl.style.display = "none";
@@ -1226,6 +1471,11 @@
           footerTextEl.textContent = "Working quietly in the background";
         }
       }
+
+      const isActivePeopleSearch =
+        (this.currentStatus.engineType || this.currentStatus.engine_type) === "PEOPLE_SEARCH" &&
+        ["acquiring", "collecting", "navigating", "waiting", "waiting_for_content", "syncing"].includes(state);
+      if (extractionControlsEl) extractionControlsEl.style.display = isActivePeopleSearch ? "flex" : "none";
 
       if (mapped.showCta) {
         if (footerMutedEl) footerMutedEl.style.display = "none";
@@ -1243,7 +1493,16 @@
 
       // Minimized pill count
       if (pillCountEl) {
-        if (displayRight > 0) {
+        if (state === "connections_ready") {
+          pillCountEl.textContent = `${this.currentStatus.totalConnections || actual || 0}`;
+        } else if (isPeopleSearch) {
+          // Never show /350 — just the live count, or "X Total" when complete
+          if (state === "resting" || state === "completed") {
+            pillCountEl.textContent = `${displayLeft} Total`;
+          } else {
+            pillCountEl.textContent = `${displayLeft}`;
+          }
+        } else if (displayRight > 0) {
           pillCountEl.textContent = `${displayLeft} / ${displayRight}`;
         } else {
           pillCountEl.textContent = `${displayLeft}`;

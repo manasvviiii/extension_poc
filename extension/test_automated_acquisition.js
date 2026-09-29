@@ -16,9 +16,10 @@ const backgroundJsSource = fs.readFileSync(backgroundJsPath, "utf8");
 const contentJsPath = path.join(__dirname, "content.js");
 const contentJsSource = fs.readFileSync(contentJsPath, "utf8");
 
-function createMockPaginatedEnvironment({ totalRecords = 1020, pageSize = 50, includeDuplicates = true, singlePageOnly = false, mockBackendSuccess = true, existingStorageMap = null } = {}) {
+function createMockPaginatedEnvironment({ totalRecords = 1020, pageSize = 50, reportedTotal = null, includeDuplicates = true, singlePageOnly = false, mockBackendSuccess = true, existingStorageMap = null } = {}) {
   const elements = new Set();
   const listeners = {};
+  const displayedTotal = reportedTotal === null ? totalRecords : reportedTotal;
   
   let currentPage = 1;
   const totalPages = singlePageOnly ? 1 : Math.ceil(totalRecords / pageSize);
@@ -48,7 +49,7 @@ function createMockPaginatedEnvironment({ totalRecords = 1020, pageSize = 50, in
         href: rec.profileUrl,
         innerText: rec.name,
         textContent: rec.name,
-        scrollIntoView: () => { if (nextBtnEl) nextBtnEl.click(); },
+        scrollIntoView: () => {},
         querySelector: (sel) => sel.includes("span") ? { innerText: rec.name, textContent: rec.name } : null
       };
 
@@ -56,7 +57,7 @@ function createMockPaginatedEnvironment({ totalRecords = 1020, pageSize = 50, in
         tagName: "DIV",
         innerText: `${rec.name}\n${rec.headline}\n1st\nConnected on Sep 10, 2026\nMessage`,
         textContent: `${rec.name}\n${rec.headline}\n1st\nConnected on Sep 10, 2026\nMessage`,
-        scrollIntoView: () => { if (nextBtnEl) nextBtnEl.click(); },
+        scrollIntoView: () => {},
         querySelector: () => null,
         querySelectorAll: (sel) => sel.includes('a[href*="/in/"]') ? [anchorEl] : []
       };
@@ -76,6 +77,7 @@ function createMockPaginatedEnvironment({ totalRecords = 1020, pageSize = 50, in
         textContent: "Next Page",
         disabled: false,
         classList: { contains: () => false },
+        hasAttribute: () => false,
         getAttribute: (attr) => attr === "aria-label" ? "Next Page" : null,
         click: () => {
           if (currentPage < totalPages) {
@@ -95,12 +97,14 @@ function createMockPaginatedEnvironment({ totalRecords = 1020, pageSize = 50, in
     visibilityState: "visible",
     location: {
       href: "https://www.linkedin.com/mynetwork/invite-connect/connections/",
-      origin: "https://www.linkedin.com"
+      origin: "https://www.linkedin.com",
+      pathname: "/mynetwork/invite-connect/connections/",
+      search: ""
     },
-    documentElement: { innerText: `Connections (${totalRecords})`, textContent: `Connections (${totalRecords})` },
-    body: { innerText: `Connections (${totalRecords})`, textContent: `Connections (${totalRecords})` },
+    documentElement: { innerText: `Connections (${displayedTotal})`, textContent: `Connections (${displayedTotal})` },
+    body: { innerText: `Connections (${displayedTotal})`, textContent: `Connections (${displayedTotal})` },
     querySelector: (selector) => {
-      if (selector.includes("nextPage") || selector.includes("next")) {
+      if (selector.includes("artdeco-pagination__button--next") || selector.includes('[aria-label*="Next"]') || selector.includes('[aria-label*="next"]')) {
         return nextBtnEl;
       }
       return null;
@@ -237,6 +241,7 @@ function createMockPaginatedEnvironment({ totalRecords = 1020, pageSize = 50, in
     documentMock,
     windowMock,
     resetDOMPage: () => renderDOMPage(1),
+    getMockPaginationState: () => ({ currentPage, hasNextButton: !!nextBtnEl }),
     getBackendFetchCallCount: () => backendFetchCallCount,
     getBackendPayload: () => backendPayload,
     sendMessage: (msg, senderTabId = 1) => {
@@ -348,6 +353,21 @@ async function runTests() {
     const status = await env.sendMessage({ action: "getAcquisitionStatus" });
     assert.strictEqual(status.status.state, "completed");
     assert.strictEqual(status.status.is_partial, false);
+  });
+
+  // Test 6a: Pagination continues even when LinkedIn reports a lower total than the available pages
+  await test("6a. Pagination continues beyond an understated LinkedIn total", async () => {
+    const env = createMockPaginatedEnvironment({ totalRecords: 30, pageSize: 10, reportedTotal: 10, includeDuplicates: false });
+    await new Promise(r => setTimeout(r, 150));
+    if (env.sandbox.window.acquisitionSession.activeLoopPromise) {
+      await env.sandbox.window.acquisitionSession.activeLoopPromise;
+    }
+
+    const status = await env.sendMessage({ action: "getAcquisitionStatus" });
+    assert.deepStrictEqual(env.getMockPaginationState(), { currentPage: 3, hasNextButton: false });
+    assert.ok(["completed", "resting"].includes(status.status.state));
+    assert.strictEqual(status.status.first_degree_count, 30);
+    assert.strictEqual(status.status.page_count, 3);
   });
 
   // Test 7: Automatic backend sync occurs AFTER verified complete acquisition
