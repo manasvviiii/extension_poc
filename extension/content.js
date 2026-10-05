@@ -1539,7 +1539,10 @@ class ConnectionAcquisitionSession {
   }
 
   reset(clearStores = false) {
+    this.phase = "IDLE";
     this.state = "idle";
+    this.connectionAcquisitionComplete = false;
+    this.isPausedForTargetedProfiles = false;
     if (clearStores) {
       this.sessionId = `warmgraph_session_${Date.now()}`;
       this.connections = new Map();
@@ -1575,7 +1578,72 @@ class ConnectionAcquisitionSession {
     this.isTabHidden = false;
   }
 
-  checkpointSessionSync() {
+  setPhase(phaseName, legacyState = null, statusMsg = null) {
+    this.phase = phaseName;
+    const legacyMap = {
+      "IDLE": "idle",
+      "CONNECTIONS_PAGE_DETECTED": "preparing",
+      "INITIALIZING": "preparing",
+      "ACQUIRING_CONNECTIONS": "acquiring",
+      "WAITING_FOR_LINKEDIN_RENDER": "waiting_for_render",
+      "RECOVERING_RENDER": "waiting_for_render",
+      "CONNECTION_ACQUISITION_COMPLETE": "completed",
+      "READY_FOR_TARGETED_PROFILES": "resting",
+      "TARGETED_PROFILE_ACQUISITION": "collecting",
+      "PAUSED": "paused"
+    };
+    this.state = legacyState || legacyMap[phaseName] || "acquiring";
+    if (statusMsg) {
+      this.statusMessage = statusMsg;
+    }
+    if (phaseName === "CONNECTION_ACQUISITION_COMPLETE" || phaseName === "READY_FOR_TARGETED_PROFILES") {
+      this.connectionAcquisitionComplete = true;
+    } else if (phaseName === "ACQUIRING_CONNECTIONS" || phaseName === "INITIALIZING") {
+      if (this.connections && this.connections.size < (this.actualProfiles || this.expectedTotal || 0)) {
+        this.connectionAcquisitionComplete = false;
+      }
+    }
+
+    console.log("[WG_ACQ_STATE]", {
+      phase: this.phase,
+      actualProfiles: this.connections ? this.connections.size : 0,
+      targetProfiles: this.actualProfiles || this.expectedTotal || 0,
+      paused: this.phase === "PAUSED" || this.state === "paused",
+      loopId: this.sessionId
+    });
+  }
+
+  canStartTargetedProfiles() {
+    const actualCount = this.connections ? this.connections.size : 0;
+    const targetCount = this.actualProfiles || this.expectedTotal || 0;
+    const isAcqComplete = this.connectionAcquisitionComplete === true ||
+                          this.phase === "CONNECTION_ACQUISITION_COMPLETE" ||
+                          this.phase === "READY_FOR_TARGETED_PROFILES" ||
+                          (targetCount > 0 && actualCount >= targetCount && (this.completionStatus === "complete" || this.verifiedExhaustion));
+
+    const allowed = (
+      isAcqComplete &&
+      targetCount > 0 &&
+      actualCount >= targetCount &&
+      (this.completionStatus === "complete" || this.verifiedExhaustion === true) &&
+      this.phase !== "PAUSED" &&
+      this.state !== "paused" &&
+      !this.isPausedForTargetedProfiles
+    );
+
+    console.log("[WG_TARGETED_GATE]", {
+      connectionAcquisitionComplete: isAcqComplete,
+      actualProfiles: actualCount,
+      targetProfiles: targetCount,
+      completionStatus: this.completionStatus || "incomplete",
+      allowed: allowed
+    });
+
+    return allowed;
+  }
+
+  checkpointSessionSync(callback) {
+    const t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
     const status = this.getStatus();
 
     // ─── CANONICAL currentSession (Single Source of Truth) ───────────────────
@@ -1708,6 +1776,14 @@ class ConnectionAcquisitionSession {
         }
 
         chrome.storage.local.set(storagePayload, () => {
+          const t1 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+          console.log("[WG_CHECKPOINT]", {
+            batchDuration: Math.round(t1 - (this.lastCheckpointTime || t0)),
+            checkpointDuration: Math.round(t1 - t0),
+            recordsPersisted: this.connections ? this.connections.size : 0,
+            totalRecords: this.connections ? this.connections.size : 0
+          });
+          this.lastCheckpointTime = t1;
           if (typeof callback === "function") callback();
         });
       } catch (e) {
@@ -2384,11 +2460,11 @@ class ConnectionAcquisitionSession {
   }
 
   async finishSessionAsComplete() {
-    this.state = "completed";
+    this.connectionAcquisitionComplete = true;
+    this.setPhase("CONNECTION_ACQUISITION_COMPLETE", "completed", "Connections acquisition complete: 2,000 / 2,000 ✨");
     this.completionStatus = "complete";
     this.verifiedExhaustion = true;
     this.isPartial = false;
-    this.statusMessage = "You're all caught up ✨";
     this.nextBatchAt = null;
     this.nextSyncDelay = 0;
     this.countdownSeconds = 0;
@@ -2401,7 +2477,7 @@ class ConnectionAcquisitionSession {
       totalConnections: this.totalConnections || this.expectedTotal,
       targetProfiles: this.actualProfiles || this.expectedTotal,
       actualProfiles: this.connections.size,
-      state: this.state,
+      phase: this.phase,
       completionStatus: this.completionStatus || "complete",
       verifiedExhaustion: true,
       connectionStoreCount: typeof connectionStore !== "undefined" ? connectionStore.size : 0,
@@ -2413,6 +2489,9 @@ class ConnectionAcquisitionSession {
 
     // STEP 3: Trigger automatic completion sync via canonical path
     await this.autoSyncToBackend();
+
+    this.setPhase("READY_FOR_TARGETED_PROFILES", "resting", "Ready for targeted profiles ✨");
+    await this.checkpointSessionAsync();
   }
 
   async runAcquisitionLoop() {
@@ -2422,6 +2501,9 @@ class ConnectionAcquisitionSession {
     this.isRunning = true;
     this.pageCount = 0;
     this.shouldCancel = false;
+
+    this.setPhase("CONNECTIONS_PAGE_DETECTED", "preparing", "Connections page detected");
+    this.setPhase("INITIALIZING", "preparing", "Initializing owner and acquisition session...");
 
     if (!this.seenProfiles) this.seenProfiles = new Set();
     this.connections.forEach((c) => {
@@ -2440,9 +2522,21 @@ class ConnectionAcquisitionSession {
       }
     }
 
+    // Fresh acquisition positioning: position at top if starting from zero
+    if (this.connections.size === 0) {
+      const initContainer = this.resolveScrollContainer();
+      const isDoc = (initContainer === document.body || initContainer === document.documentElement || initContainer === document.scrollingElement);
+      if (!isDoc && initContainer) {
+        initContainer.scrollTop = 0;
+      }
+      if (typeof window.scrollTo === "function") {
+        window.scrollTo({ top: 0, behavior: "instant" });
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+
     // Step 1: Initial extraction of cards visible in initial view
-    this.state = "acquiring";
-    this.statusMessage = "Mapping your network...";
+    this.setPhase("ACQUIRING_CONNECTIONS", "acquiring", "Mapping your network...");
     const initialScan = this.scanCurrentPageForUnseen();
     if (initialScan.newProfilesCount > 0) {
       await this.checkpointSession();
@@ -2454,8 +2548,7 @@ class ConnectionAcquisitionSession {
     while (!this.shouldCancel) {
       // 1. Guard route: must remain on approved connections page
       if (!isConnectionsPage()) {
-        this.state = "paused";
-        this.statusMessage = "Return to Connections to continue syncing.";
+        this.setPhase("PAUSED", "paused", "Return to Connections to continue syncing.");
         if (this.nextBatchAt && this.nextBatchAt > Date.now()) {
           this.pausedRemainingMs = this.nextBatchAt - Date.now();
         }
@@ -2478,8 +2571,7 @@ class ConnectionAcquisitionSession {
       const container = this.resolveScrollContainer();
 
       // 4. Perform traversal (scroll or Load More click)
-      this.state = "waiting";
-      this.statusMessage = "Loading connections...";
+      this.setPhase("ACQUIRING_CONNECTIONS", "waiting", "Loading connections...");
       const traversal = await this.performTraversalStep(container);
 
       // 5. Pacing delay: allow LinkedIn enough time to render
@@ -2497,9 +2589,22 @@ class ConnectionAcquisitionSession {
       if (this.shouldCancel) break;
 
       // 6. After traversal: extract all newly exposed cards
-      this.state = "acquiring";
-      this.statusMessage = "Mapping your network...";
+      this.setPhase("ACQUIRING_CONNECTIONS", "acquiring", "Mapping your network...");
       const scanRes = this.scanCurrentPageForUnseen();
+
+      const isDoc = (container === document.body || container === document.documentElement || container === document.scrollingElement);
+      const currentScrollTop = isDoc
+        ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
+        : (container ? container.scrollTop : 0);
+      const scrollHeight = container ? container.scrollHeight : (document.documentElement ? document.documentElement.scrollHeight : 0);
+
+      console.log("[WG_ACQ_PROGRESS]", {
+        actualProfiles: this.connections.size,
+        targetProfiles: targetCount,
+        newKeys: scanRes.newProfilesCount,
+        scrollTop: Math.round(currentScrollTop),
+        scrollHeight: Math.round(scrollHeight)
+      });
 
       // 7. Check for new profile keys
       if (scanRes.newProfilesCount > 0) {
@@ -2513,12 +2618,6 @@ class ConnectionAcquisitionSession {
         }
       } else {
         // No new profiles in this batch — assess stall reason and initiate controlled render recovery
-        const container = this.resolveScrollContainer();
-        const isDoc = (container === document.body || container === document.documentElement || container === document.scrollingElement);
-        const currentScrollTop = isDoc
-          ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
-          : (container ? container.scrollTop : 0);
-        const scrollHeight = container ? container.scrollHeight : (document.documentElement ? document.documentElement.scrollHeight : 0);
         const clientHeight = container ? container.clientHeight : (window.innerHeight || 800);
         const visibleKeys = Array.from(this.getVisibleProfileKeys());
 
@@ -2541,14 +2640,15 @@ class ConnectionAcquisitionSession {
           reason: stallReason
         });
 
-        this.state = "WAITING_FOR_RENDER";
-        this.statusMessage = "Waiting for LinkedIn to load more connections...";
+        this.setPhase("WAITING_FOR_LINKEDIN_RENDER", "waiting_for_render", "Waiting for LinkedIn to load more connections...");
         await this.checkpointSession();
 
         let recoveryProgressMade = false;
 
         for (let attempt = 1; attempt <= 3; attempt++) {
           if (this.shouldCancel || !isConnectionsPage()) break;
+
+          this.setPhase("RECOVERING_RENDER", "waiting_for_render", `Recovering LinkedIn list rendering (attempt ${attempt})...`);
 
           const activeContainer = this.resolveScrollContainer();
           const activeIsDoc = (activeContainer === document.body || activeContainer === document.documentElement || activeContainer === document.scrollingElement);
@@ -2646,19 +2746,18 @@ class ConnectionAcquisitionSession {
 
           const recovered = (recScan.newProfilesCount > 0);
 
-          console.log("[WG_RENDER_RECOVERY]", {
+          console.log("[WG_ACQ_RECOVERY]", {
             attempt,
-            previousScrollTop: prevScrollTop,
-            newScrollTop,
+            previousScrollTop: Math.round(prevScrollTop),
+            newScrollTop: Math.round(newScrollTop),
             newKeysBefore,
             newKeysAfter,
-            recovered
+            reason: stallReason
           });
 
           if (recovered) {
             recoveryProgressMade = true;
-            this.state = "acquiring";
-            this.statusMessage = "Resuming extraction...";
+            this.setPhase("ACQUIRING_CONNECTIONS", "acquiring", "Resuming extraction...");
             consecutiveZeroProgressCount = 0;
             await this.checkpointSession();
             break;
@@ -2685,8 +2784,7 @@ class ConnectionAcquisitionSession {
           if (targetCount > 0 && this.connections.size >= targetCount) {
             await this.finishSessionAsComplete();
           } else {
-            this.state = "paused";
-            this.statusMessage = "Extraction paused. Scroll page to render remaining connections.";
+            this.setPhase("PAUSED", "paused", "Extraction paused. Scroll page to render remaining connections.");
             await this.checkpointSession();
           }
           break;
@@ -2695,8 +2793,7 @@ class ConnectionAcquisitionSession {
     }
 
     if (this.shouldCancel) {
-      this.state = "paused";
-      this.statusMessage = "Acquisition stopped. Progress saved.";
+      this.setPhase("PAUSED", "paused", "Acquisition stopped. Progress saved.");
       await this.checkpointSession();
     }
 
@@ -2811,7 +2908,9 @@ class ConnectionAcquisitionSession {
           const remSec = Math.ceil((nextBatchAt - now) / 1000);
           this.countdownSeconds = remSec;
           this.statusMessage = `Next batch in ${remSec}s`;
-          this.checkpointSessionSync();
+          if (typeof window !== "undefined" && typeof window.updateWarmGraphOverlay === "function") {
+            window.updateWarmGraphOverlay(this.getStatus());
+          }
         }
       }, 500);
 
@@ -2854,8 +2953,7 @@ class ConnectionAcquisitionSession {
 
   cancel() {
     this.shouldCancel = true;
-    this.state = "paused";
-    this.statusMessage = "Extraction stopped. Progress saved.";
+    this.setPhase("PAUSED", "paused", "Acquisition stopped. Progress saved.");
     if (this.nextBatchResolver) {
       this.nextBatchResolver();
       this.nextBatchResolver = null;
@@ -2875,7 +2973,7 @@ class ConnectionAcquisitionSession {
     const imported = this.importedRecords;
     const activeFilterObj = this.activeFilter || extractActiveFilterFromDom();
     const now = Date.now();
-    const isPaused = this.state === "paused" || this.state === "interrupted" || !isConnectionsPage();
+    const isPaused = this.phase === "PAUSED" || this.state === "paused" || this.state === "interrupted" || !isConnectionsPage();
     const derivedCountdown = isPaused
       ? (this.pausedRemainingMs ? Math.ceil(this.pausedRemainingMs / 1000) : (this.countdownSeconds || 0))
       : ((this.nextBatchAt && this.nextBatchAt > now) ? Math.max(0, Math.ceil((this.nextBatchAt - now) / 1000)) : (this.countdownSeconds || 0));
@@ -2883,7 +2981,10 @@ class ConnectionAcquisitionSession {
     return {
       sessionId: this.sessionId,
       lockedPath: this.lockedPath || CONNECTIONS_LOCKED_PATH,
+      phase: this.phase || (isPaused ? "PAUSED" : "ACQUIRING_CONNECTIONS"),
       state: isPaused && (this.state === "acquiring" || this.state === "waiting") ? "paused" : this.state,
+      connectionAcquisitionComplete: !!this.connectionAcquisitionComplete,
+      canStartTargetedProfiles: this.canStartTargetedProfiles(),
       completion_status: this.completionStatus || (this.state === "completed" ? (collected >= expected ? "complete" : "complete_rendered_dataset") : "incomplete"),
       page_count: this.pageCount,
       expected_total: expected,
@@ -2906,7 +3007,7 @@ class ConnectionAcquisitionSession {
       remaining_count: remaining,
       remainingConnections: remaining,
       first_degree_count: collected,
-      relationship_evidence_count: this.relationshipEvidence.size,
+      relationship_evidence_count: this.relationshipEvidence ? this.relationshipEvidence.size : 0,
       last_batch_new_connections: this.lastBatchNewConnections,
       last_batch_new_evidence: this.lastBatchNewEvidence,
       is_partial: this.isPartial,
