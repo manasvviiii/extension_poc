@@ -47,9 +47,9 @@ function getStoredOwnerId() {
           return;
         }
 
-        // Priority 2: legacy ownerId (only if not a random warmgraph_ UUID)
+        // Priority 2: ownerId
         const legacyId = result.ownerId;
-        if (legacyId && !legacyId.startsWith("warmgraph_")) {
+        if (legacyId) {
           resolve({
             ownerId: legacyId,
             externalProfileUrl: result.externalProfileUrl || null,
@@ -58,7 +58,7 @@ function getStoredOwnerId() {
           return;
         }
 
-        // Not yet identified — return null so callers show "Identity Pending"
+        // Not yet identified
         resolve({ ownerId: null, externalProfileUrl: result.externalProfileUrl || null, name: null });
       }
     );

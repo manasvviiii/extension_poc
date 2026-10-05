@@ -23,9 +23,7 @@ let cachedOwnerId = null;
  */
 function detectLinkedInOwnerSlug() {
   try {
-    // ONLY inspect top global navigation header elements representing the logged-in "Me" user.
-    // NEVER inspect page body elements, profile rail cards, or viewed profile elements.
-    const preciseSels = [
+    const candidateSelectors = [
       "a.global-nav__me-photo[href*='/in/']",
       ".global-nav__me a[href*='/in/']",
       "[data-view-name='nav-profile-section'] a[href*='/in/']",
@@ -33,21 +31,32 @@ function detectLinkedInOwnerSlug() {
       "a[href*='/in/'][data-control-name*='identity_welcome_message']",
       "a[href*='/in/'][data-control-name*='nav.settings']",
       ".nav-profile-menu__link a[href*='/in/']",
-      ".mn-identity-badge a[href*='/in/']"
+      ".mn-identity-badge a[href*='/in/']",
+      ".feed-identity-module a[href*='/in/']",
+      "[data-control-name*='identity_profile_photo'][href*='/in/']"
     ];
 
-    for (const sel of preciseSels) {
+    for (const sel of candidateSelectors) {
       try {
         const el = document.querySelector(sel);
-        // Strict guard: element MUST be inside global nav container
-        if (el && el.href && el.closest("header, nav, .global-nav, #global-nav")) {
+        if (el && el.href) {
           const match = el.href.match(/\/in\/([^/?#]+)/);
           if (match && match[1] && match[1] !== "undefined") return match[1];
         }
       } catch (_) {}
     }
+
+    // Secondary scan: check identity scripts or embedded json
+    const codeBlocks = document.querySelectorAll('code[id*="bpr-guid-"]');
+    for (const cb of codeBlocks) {
+      const txt = cb.textContent || "";
+      if (txt.includes('"publicIdentifier"')) {
+        const match = txt.match(/"publicIdentifier"\s*:\s*"([^"]+)"/);
+        if (match && match[1] && !match[1].includes("/")) return match[1];
+      }
+    }
   } catch (e) {
-    // Non-browser environment — ignore
+    // Non-browser environment - ignore
   }
   return null;
 }
@@ -61,52 +70,46 @@ function slugToOwnerId(slug) {
 }
 
 /**
- * Detect the owner's LinkedIn identity from the DOM and persist it
- * in warmgraph_owner + ownerId for cross-component consistency.
- * Returns the ownerId string, or null if not detected.
+ * Detect the owner's LinkedIn identity from storage or DOM, or create a stable
+ * local session owner ID immediately so acquisition never stalls in "Identity Pending".
  */
 async function detectAndPersistOwnerIdentity() {
-  // Check storage FIRST — before touching the DOM
-  const stored = await new Promise(r => chrome.storage.local.get(["warmgraph_owner", "ownerId"], r));
-  const currentOwner = stored.warmgraph_owner;
-  const currentId = currentOwner?.ownerId || stored.ownerId || "";
+  // Step 1: Check existing persisted owner identity
+  const stored = await new Promise(r => chrome.storage.local.get(["warmgraph_owner", "ownerId", "externalProfileUrl"], r));
+  const currentOwner = stored && stored.warmgraph_owner;
+  const currentId = currentOwner?.ownerId || (stored && stored.ownerId) || "";
 
-  // IMMUTABILITY: Real LinkedIn slug already stored — never re-detect or overwrite.
-  // Visiting a target person's profile page must NOT change the owner identity.
-  const isRealId = currentId && !currentId.startsWith("warmgraph_");
-  if (isRealId) {
+  if (currentId) {
+    // If we already have a real slug or local owner ID, preserve it
     cachedOwnerId = currentId;
     return cachedOwnerId;
   }
 
-  // Only attempt DOM detection if we don't have a confirmed identity yet
+  // Step 2: Try DOM detection from navigation or identity modules
   const slug = detectLinkedInOwnerSlug();
-  if (!slug) return null;
+  const ownerId = slug ? slugToOwnerId(slug) : `wg_owner_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const profileUrl = slug ? `https://www.linkedin.com/in/${slug}` : null;
 
-  const ownerId = slugToOwnerId(slug);
-  const profileUrl = `https://www.linkedin.com/in/${slug}`;
-
-  // Write only when identity is truly missing or was a temporary UUID
   const ownerRecord = {
     ownerId,
     profileUrl,
     name: "",
     detectedAt: new Date().toISOString(),
-    source: "linkedin_nav"
+    source: slug ? "linkedin_nav" : "local_session"
   };
+
   await new Promise(r => chrome.storage.local.set({
     warmgraph_owner: ownerRecord,
     ownerId,
     externalProfileUrl: profileUrl
   }, r));
+
   cachedOwnerId = ownerId;
   return ownerId;
 }
 
 /**
  * Get the canonical owner ID.
- * Loads strictly from warmgraph_owner.ownerId > ownerId storage keys.
- * Never derives from target, current profile page, UUID, or session.
  */
 function getOwnerId() {
   if (cachedOwnerId) {
@@ -114,30 +117,17 @@ function getOwnerId() {
   }
 
   return new Promise((resolve) => {
-    chrome.storage.local.get(["warmgraph_owner", "ownerId"], (result) => {
-      // Priority 1: canonical warmgraph_owner record
-      if (result.warmgraph_owner?.ownerId) {
-        cachedOwnerId = result.warmgraph_owner.ownerId;
+    chrome.storage.local.get(["warmgraph_owner", "ownerId"], async (result) => {
+      const storedId = result?.warmgraph_owner?.ownerId || result?.ownerId;
+      if (storedId) {
+        cachedOwnerId = storedId;
         resolve(cachedOwnerId);
         return;
       }
 
-      // Priority 2: legacy ownerId key (only accept if it's NOT a random warmgraph_ UUID)
-      if (result.ownerId && !result.ownerId.startsWith("warmgraph_")) {
-        cachedOwnerId = result.ownerId;
-        resolve(cachedOwnerId);
-        return;
-      }
-
-      // Priority 3: Try DOM detection once
-      detectAndPersistOwnerIdentity().then(detectedId => {
-        if (detectedId) {
-          cachedOwnerId = detectedId;
-          resolve(cachedOwnerId);
-          return;
-        }
-        resolve(result.ownerId || null);
-      });
+      // Establish identity immediately
+      const id = await detectAndPersistOwnerIdentity();
+      resolve(id);
     });
   });
 }
@@ -1501,8 +1491,8 @@ function mergeRecord(existing = {}, fresh = {}) {
   return merged;
 }
 
-const ACQUISITION_MIN_DELAY_MS = 8000;
-const ACQUISITION_MAX_DELAY_MS = 30000;
+const ACQUISITION_MIN_DELAY_MS = 7000;
+const ACQUISITION_MAX_DELAY_MS = 10000;
 
 function getRandomAcquisitionDelayMs() {
   if (typeof window !== "undefined" && window.TEST_ACQUISITION_DELAY_MS !== undefined) {
@@ -1699,7 +1689,7 @@ class ConnectionAcquisitionSession {
       action: "UPDATE_SESSION",
       sessionId: this.sessionId,
       lockedPath: status.lockedPath || CONNECTIONS_LOCKED_PATH,
-      connections: status.connections,
+      connections: (this.connections.size <= 200 || status.state === "completed" || status.state === "resting") ? status.connections : [],
       relationship_evidence: status.relationship_evidence,
       expectedTotal: status.expected_total,
       totalConnections: status.totalConnections,
@@ -1743,13 +1733,18 @@ class ConnectionAcquisitionSession {
           if (canonical && canonical.totalConnections) {
             this.totalConnections = canonical.totalConnections;
             this.expectedTotal = canonical.totalConnections;
-            this.actualProfiles = canonical.totalConnections;
+            // Prefer the stored actualProfiles (frozen -1 offset); fall back to totalConnections
+            this.actualProfiles = (canonical.actualProfiles && canonical.actualProfiles > 0)
+              ? canonical.actualProfiles
+              : canonical.totalConnections;
           } else if (session) {
             const t = session.totalConnections || session.expectedTotal || 0;
             if (t > 0) {
               this.totalConnections = t;
               this.expectedTotal = t;
-              this.actualProfiles = t;
+              this.actualProfiles = (session.actualProfiles && session.actualProfiles > 0)
+                ? session.actualProfiles
+                : t;
             }
           }
           // ───────────────────────────────────────────────────────────────────
@@ -1914,298 +1909,173 @@ class ConnectionAcquisitionSession {
     return this.scanCurrentPageForUnseen();
   }
 
-  findScrollContainer(loaderEl) {
-    const checkScrollable = (el) => {
-      if (!el || el === document.body || el === document.documentElement) return null;
+  getVisibleProfileKeys() {
+    const keys = new Set();
+    // Restrict to connection card containers to avoid picking up nav/sidebar /in/ links
+    const cardSelectors = [
+      '.mn-connection-card',
+      '.mn-connections-list li',
+      '.scaffold-finite-scroll__content li',
+      '.scaffold-finite-scroll__content .entity-result',
+      '[data-view-name="connections-list-item"]',
+      '.connection-card'
+    ];
+    let cardEls = [];
+    if (document.querySelectorAll) {
+      for (const sel of cardSelectors) {
+        const els = document.querySelectorAll(sel);
+        if (els.length > 0) {
+          cardEls = Array.from(els);
+          break;
+        }
+      }
+      // Fallback: all /in/ anchors (broad, but last resort)
+      if (cardEls.length === 0) {
+        cardEls = Array.from(document.querySelectorAll('a[href*="/in/"]'));
+      }
+    }
+    for (const el of cardEls) {
+      // If el is an anchor, use directly; otherwise find /in/ links within the card
+      const anchors = el.tagName === 'A' ? [el] : (el.querySelectorAll ? el.querySelectorAll('a[href*="/in/"]') : []);
+      for (const a of anchors) {
+        const norm = normalizeProfileUrl(a.href);
+        if (norm) {
+          keys.add(norm);
+          break; // one key per card
+        }
+      }
+    }
+    return keys;
+  }
+
+  resolveScrollContainer() {
+    // 1. Check ancestors of connections list or loader
+    const listEl = document.querySelector ? document.querySelector('.mn-connections-list, .scaffold-finite-scroll__content, .scaffold-finite-scroll') : null;
+    let cur = listEl;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      try {
+        const style = (typeof window !== "undefined" && window.getComputedStyle) ? window.getComputedStyle(cur) : {};
+        const oy = style.overflowY || style.overflow || "";
+        if ((oy.includes("auto") || oy.includes("scroll") || oy.includes("overlay")) && cur.scrollHeight > cur.clientHeight + 10) {
+          return cur;
+        }
+      } catch (_) {}
+      cur = cur.parentElement;
+    }
+
+    // 2. Check explicit layout elements
+    const explicitEls = document.querySelectorAll ? document.querySelectorAll('.scaffold-layout__main, .scaffold-finite-scroll, main') : [];
+    for (const el of explicitEls) {
       try {
         const style = (typeof window !== "undefined" && window.getComputedStyle) ? window.getComputedStyle(el) : {};
-        const overflowY = style.overflowY || style.overflow || "";
-        const isScrollStyle = overflowY.includes("auto") || overflowY.includes("scroll") || overflowY.includes("overlay");
-        if (isScrollStyle && el.scrollHeight > el.clientHeight + 5) {
+        const oy = style.overflowY || style.overflow || "";
+        if ((oy.includes("auto") || oy.includes("scroll") || oy.includes("overlay")) && el.scrollHeight > el.clientHeight + 10) {
           return el;
         }
-      } catch (e) {}
-      return null;
-    };
+      } catch (_) {}
+    }
 
-    if (loaderEl) {
-      let current = loaderEl.parentElement;
-      while (current && current !== document.body && current !== document.documentElement) {
-        const res = checkScrollable(current);
-        if (res) return res;
-        current = current.parentElement;
+    // 3. Document scroller fallback
+    return document.scrollingElement || document.documentElement || document.body;
+  }
+
+  findLoadMoreButton() {
+    const selectors = [
+      'button.scaffold-finite-scroll__load-button',
+      'button[aria-label*="Load more" i]',
+      'button[aria-label*="Show more" i]',
+      'button[aria-label*="See more" i]',
+      '#infiniteLoader',
+      'button#nextPage',
+      'button#nextPageBottom'
+    ];
+
+    for (const sel of selectors) {
+      const el = document.querySelector ? document.querySelector(sel) : null;
+      if (el && !el.disabled && el.offsetParent !== null) {
+        return el;
       }
     }
 
-    const firstCardAnchor = document.querySelector ? document.querySelector('a[href*="/in/"]') : null;
-    if (firstCardAnchor) {
-      let current = firstCardAnchor.parentElement;
-      while (current && current !== document.body && current !== document.documentElement) {
-        const res = checkScrollable(current);
-        if (res) return res;
-        current = current.parentElement;
+    const allButtons = document.querySelectorAll ? document.querySelectorAll('button') : [];
+    for (const b of allButtons) {
+      if (b.disabled || b.offsetParent === null) continue;
+      const txt = (b.innerText || b.textContent || "").trim().toLowerCase();
+      if (txt === "load more" || txt === "show more" || txt === "see more connections" || txt.includes("next page")) {
+        return b;
       }
     }
-
-    const explicitContainers = document.querySelectorAll
-      ? document.querySelectorAll('.scaffold-finite-scroll, .scaffold-layout__main, .mn-connections-list, main, section')
-      : [];
-    for (const el of explicitContainers) {
-      const res = checkScrollable(el);
-      if (res) return res;
-    }
-
     return null;
   }
 
-  async triggerContainerLoad(attemptNumber = 1) {
-    const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"], [class*="next"], [id*="next"], button[aria-label*="Next"]') : null;
+  async performTraversalStep(container) {
+    const isDoc = (container === document.body || container === document.documentElement || container === document.scrollingElement);
+    const scrollTopBefore = isDoc
+      ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
+      : (container ? container.scrollTop : 0);
+    const scrollHeight = container ? container.scrollHeight : (document.documentElement ? document.documentElement.scrollHeight : 0);
+    const clientHeight = container ? container.clientHeight : (window.innerHeight || 800);
+    const isAtBottom = (scrollTopBefore + clientHeight >= scrollHeight - 50);
 
-    if (loader && typeof loader.click === "function") {
-      try { loader.click(); } catch (e) {}
-    }
-
-    if (!this.lastTelemetry) {
-      this.lastTelemetry = {};
-    }
-
-    const telemetry = this.lastTelemetry;
-    telemetry.attempt_number = attemptNumber;
-    telemetry.expected_total = this.expectedTotal;
-    telemetry.collected_count = this.connections.size;
-    telemetry.loader_found = !!loader;
-    if (!telemetry.trigger_method) {
-      telemetry.trigger_method = "none";
-    }
-
-    const container = this.findScrollContainer(loader);
-    const preCardCount = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]').length : 0;
-
-    // Task 8.9.3: Human-like scroll distance (120–180px, default/avg 150px)
-    const scrollDistance = Math.floor(Math.random() * (180 - 120 + 1)) + 120;
-    // Task 8.9.3: Inter-scroll delay (280–520ms)
-    const scrollDelayMs = Math.floor(Math.random() * (520 - 280 + 1)) + 280;
-
-    if (container) {
-      telemetry.scroll_container_description = container.className ? `.${container.className.split(' ').join('.')}` : (container.id ? `#${container.id}` : container.tagName);
-      const scrollTopBefore = container.scrollTop || 0;
-      const scrollHeight = container.scrollHeight || 0;
-      const clientHeight = container.clientHeight || 0;
-      const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
-
-      telemetry.scroll_top_before = scrollTopBefore;
-      telemetry.scroll_height = scrollHeight;
-      telemetry.client_height = clientHeight;
-
+    // 1. Check for Load More button
+    const loadMoreBtn = this.findLoadMoreButton();
+    if (loadMoreBtn) {
       try {
-        if (typeof container.scrollBy === "function") {
-          container.scrollBy({ top: scrollDistance, behavior: "smooth" });
-        } else {
-          container.scrollTop = Math.min(maxScrollTop, scrollTopBefore + scrollDistance);
-        }
-        telemetry.scroll_top_after = container.scrollTop || 0;
-        telemetry.trigger_method = "container_smooth_scrollBy";
-
-        const isNearBottom = maxScrollTop - scrollTopBefore < 100 || container.scrollTop >= maxScrollTop - 10;
-
-        if (isNearBottom) {
-          const profileAnchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
-          const lastProfileAnchor = profileAnchors.length > 0 ? profileAnchors[profileAnchors.length - 1] : null;
-          const lastCard = lastProfileAnchor ? getCardRoot(lastProfileAnchor) : null;
-          const sentinel = loader || lastCard || (container.querySelector ? container.querySelector('.scaffold-finite-scroll__content > *:last-child, ul > *:last-child, li:last-child') : null);
-
-          if (sentinel && typeof sentinel.scrollIntoView === "function") {
-            try {
-              sentinel.scrollIntoView({ block: "end", behavior: "smooth" });
-              telemetry.trigger_method = loader ? "loader_scrollIntoView" : "last_card_scrollIntoView";
-            } catch (e) {}
-          }
-
-          container.scrollTop = Math.max(0, maxScrollTop - 80);
-          container.dispatchEvent(new Event("scroll", { bubbles: true }));
-          if (typeof window !== "undefined") {
-            window.dispatchEvent(new Event("scroll", { bubbles: true }));
-            window.dispatchEvent(new Event("resize", { bubbles: true }));
-          }
-
-          container.scrollTop = maxScrollTop;
-          container.dispatchEvent(new Event("scroll", { bubbles: true }));
-          if (typeof window !== "undefined") {
-            window.dispatchEvent(new Event("scroll", { bubbles: true }));
-            window.dispatchEvent(new Event("resize", { bubbles: true }));
-          }
-        } else {
-          container.dispatchEvent(new Event("scroll", { bubbles: true }));
-          if (typeof window !== "undefined") {
-            window.dispatchEvent(new Event("scroll", { bubbles: true }));
-          }
-        }
-
-        // Wait for smooth animation and human cadence delay
-        await new Promise((r) => setTimeout(r, scrollDelayMs));
-
-        // Micro pause: Every 8–12 scrolls, pause for 900–1500ms
-        this.humanScrollCount = (this.humanScrollCount || 0) + 1;
-        if (!this.nextMicroPauseThreshold) {
-          this.nextMicroPauseThreshold = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
-        }
-
-        if (this.humanScrollCount >= this.nextMicroPauseThreshold) {
-          this.humanScrollCount = 0;
-          this.nextMicroPauseThreshold = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
-          const microPauseMs = Math.floor(Math.random() * (1500 - 900 + 1)) + 900;
-          await new Promise((r) => setTimeout(r, microPauseMs));
-        }
-
-      } catch (e) {}
-
-      telemetry.bottom_telemetry = inspectBottomTelemetry(container, loader, preCardCount, preCardCount, scrollHeight, scrollHeight, null);
-
-      return { success: true, telemetry, container };
-    }
-
-    telemetry.scroll_container_description = "window (document.documentElement)";
-    const scroller = (document.scrollingElement || document.documentElement || document.body);
-    const initialScrollY = typeof window !== "undefined" ? (window.scrollY || window.pageYOffset || (scroller ? scroller.scrollTop : 0)) : 0;
-    const docScrollHeight = scroller ? scroller.scrollHeight : (document.documentElement ? document.documentElement.scrollHeight : 0);
-    const viewportHeight = typeof window !== "undefined" ? window.innerHeight : (scroller ? scroller.clientHeight : 0);
-
-    telemetry.scroll_top_before = initialScrollY;
-    telemetry.scroll_height = docScrollHeight;
-    telemetry.client_height = viewportHeight;
-
-    try {
-      if (typeof window !== "undefined" && typeof window.scrollBy === "function") {
-        window.scrollBy({ top: scrollDistance, behavior: "smooth" });
-      } else if (scroller) {
-        scroller.scrollTop = (scroller.scrollTop || 0) + scrollDistance;
-      }
-      const newScrollY = typeof window !== "undefined" ? (window.scrollY || window.pageYOffset || (scroller ? scroller.scrollTop : 0)) : 0;
-      telemetry.scroll_top_after = newScrollY;
-      telemetry.trigger_method = "window_smooth_scrollBy";
-
-      const fallbackAnchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
-      const lastProfileAnchor = fallbackAnchors.length > 0 ? fallbackAnchors[fallbackAnchors.length - 1] : null;
-      const lastCard = lastProfileAnchor ? getCardRoot(lastProfileAnchor) : null;
-      const sentinel = loader || lastCard;
-      if (sentinel && typeof sentinel.scrollIntoView === "function") {
-        try { sentinel.scrollIntoView({ block: "end", behavior: "smooth" }); } catch (e) {}
-      }
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new Event("scroll", { bubbles: true }));
-        window.dispatchEvent(new Event("resize", { bubbles: true }));
-      }
-
-      // Wait for smooth animation and human cadence delay
-      await new Promise((r) => setTimeout(r, scrollDelayMs));
-
-      // Micro pause: Every 8–12 scrolls, pause for 900–1500ms
-      this.humanScrollCount = (this.humanScrollCount || 0) + 1;
-      if (!this.nextMicroPauseThreshold) {
-        this.nextMicroPauseThreshold = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
-      }
-
-      if (this.humanScrollCount >= this.nextMicroPauseThreshold) {
-        this.humanScrollCount = 0;
-        this.nextMicroPauseThreshold = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
-        const microPauseMs = Math.floor(Math.random() * (1500 - 900 + 1)) + 900;
-        await new Promise((r) => setTimeout(r, microPauseMs));
-      }
-
-    } catch (e) {}
-
-    telemetry.bottom_telemetry = inspectBottomTelemetry(scroller, loader, preCardCount, preCardCount, docScrollHeight, docScrollHeight, null);
-
-    return { success: true, telemetry, container: scroller };
-  }
-
-  async waitForDomCardsToIncrease(previousCardCount, timeoutMs = 2500, container = null) {
-    const startTime = Date.now();
-    const observedAddedNodes = [];
-    let mutationRecordCount = 0;
-    let tempLoadingDetected = null;
-
-    const targetContainer = container || (document.querySelector ? document.querySelector('main#workspace, main, section') : null) || (document.body || document.documentElement);
-
-    let subObserver = null;
-    let mutationObserved = false;
-    let newCards = 0;
-
-    await new Promise((resolve) => {
-      let resolved = false;
-
-      const finishWait = (hasMutation = false, cardDiff = 0) => {
-        if (resolved) return;
-        resolved = true;
-        if (subObserver) {
-          try { subObserver.disconnect(); } catch (e) {}
-        }
-        mutationObserved = hasMutation;
-        newCards = cardDiff;
-        resolve();
-      };
-
-      try {
-        if (typeof MutationObserver !== "undefined" && targetContainer) {
-          subObserver = new MutationObserver((mutations) => {
-            mutationRecordCount += mutations.length;
-            for (const m of mutations) {
-              if (m.addedNodes && m.addedNodes.length > 0) {
-                for (const node of m.addedNodes) {
-                  if (node.nodeType === 1) {
-                    const tag = node.tagName ? node.tagName.toLowerCase() : "";
-                    const cls = node.className ? `.${node.className.toString().trim().split(/\s+/).join('.')}` : "";
-                    observedAddedNodes.push(`${tag}${cls}`.slice(0, 50));
-                  }
-                }
-              }
-            }
-            const currentCards = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]').length : 0;
-            if (currentCards > previousCardCount) {
-              finishWait(true, currentCards - previousCardCount);
-            }
-          });
-          subObserver.observe(targetContainer, { childList: true, subtree: true });
-        }
-      } catch (e) {}
-
-      if (typeof setInterval === "function") {
-        const interval = setInterval(() => {
-          const currentCards = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]').length : 0;
-          if (currentCards > previousCardCount) {
-            clearInterval(interval);
-            finishWait(true, currentCards - previousCardCount);
-          } else if (Date.now() - startTime >= timeoutMs) {
-            clearInterval(interval);
-            finishWait(false, 0);
-          }
-        }, 50);
-      } else {
-        const poll = () => {
-          const currentCards = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]').length : 0;
-          if (currentCards > previousCardCount) {
-            finishWait(true, currentCards - previousCardCount);
-          } else if (Date.now() - startTime >= timeoutMs) {
-            finishWait(false, 0);
-          } else if (typeof setTimeout === "function") {
-            setTimeout(poll, 50);
-          } else {
-            finishWait(false, 0);
-          }
+        loadMoreBtn.click();
+        return {
+          method: "load_more",
+          moved: true,
+          scrollTopBefore,
+          scrollHeight,
+          clientHeight,
+          isAtBottom: false
         };
-        poll();
-      }
-    });
+      } catch (_) {}
+    }
 
-    const uniqueAddedNodes = Array.from(new Set(observedAddedNodes)).slice(0, 6);
-    const addedSummary = uniqueAddedNodes.length > 0 ? `${observedAddedNodes.length} nodes (${uniqueAddedNodes.join(', ')})` : "None";
+    // 2. Container or Window Scroll
+    const scrollStep = Math.max(500, Math.floor(clientHeight * 0.75));
+    let moved = false;
+
+    if (container && !isDoc) {
+      const prev = container.scrollTop;
+      container.scrollTop = Math.min(scrollHeight - clientHeight, container.scrollTop + scrollStep);
+      moved = (container.scrollTop !== prev);
+      container.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+
+    if (!moved || isDoc) {
+      const prevWinY = window.scrollY || 0;
+      if (typeof window.scrollBy === "function") {
+        window.scrollBy({ top: scrollStep, behavior: "instant" });
+      } else {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        if (scroller) scroller.scrollTop = (scroller.scrollTop || 0) + scrollStep;
+      }
+      const newWinY = window.scrollY || 0;
+      if (newWinY !== prevWinY) moved = true;
+      window.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+
+    // Also trigger intersection observers on sentinel / last card
+    const anchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
+    if (anchors.length > 0) {
+      const lastAnchor = anchors[anchors.length - 1];
+      const sentinel = (lastAnchor.closest && lastAnchor.closest('li, .mn-connection-card, [class*="card"]')) || lastAnchor;
+      if (sentinel && typeof sentinel.scrollIntoView === "function") {
+        try {
+          sentinel.scrollIntoView({ block: "end", behavior: "instant" });
+        } catch (_) {}
+      }
+    }
 
     return {
-      mutationObserved,
-      newCards,
-      mutationRecordCount,
-      addedSummary,
-      tempLoadingDetected: tempLoadingDetected || "None detected"
+      method: "scroll",
+      moved,
+      scrollTopBefore,
+      scrollHeight,
+      clientHeight,
+      isAtBottom
     };
   }
 
@@ -2300,6 +2170,24 @@ class ConnectionAcquisitionSession {
     }
   }
 
+  async finishSessionAsComplete() {
+    this.state = "completed";
+    this.completionStatus = (this.expectedTotal > 0 && this.connections.size >= this.expectedTotal - 1)
+      ? "complete"
+      : "complete_rendered_dataset";
+    // Do NOT set syncStatus = "synced" here — autoSyncToBackend() guards on syncStatus
+    // and will skip execution if it sees "synced". Let autoSyncToBackend() drive sync status.
+    this.isPartial = false;
+    this.statusMessage = "You're all caught up ✨";
+    this.nextBatchAt = null;
+    this.nextSyncDelay = 0;
+    this.countdownSeconds = 0;
+    this.pausedRemainingMs = null;
+    this.estimatedRemainingMs = null;
+    await this.checkpointSession();
+    await this.autoSyncToBackend();
+  }
+
   async runAcquisitionLoop() {
     if (typeof window !== "undefined") {
       window.__warmgraphAcquisitionRunning = true;
@@ -2307,8 +2195,6 @@ class ConnectionAcquisitionSession {
     this.isRunning = true;
     this.pageCount = 0;
     this.shouldCancel = false;
-    let consecutiveZeroNewCardScrolls = 0;
-    const MAX_ZERO_NEW_CARD_SCROLLS = 4;
 
     if (!this.seenProfiles) this.seenProfiles = new Set();
     this.connections.forEach((c) => {
@@ -2317,21 +2203,28 @@ class ConnectionAcquisitionSession {
     });
 
     // ── SSOT: Freeze totalConnections and actualProfiles ONCE per session ────
-    // Only read the LinkedIn header on the very first batch (or if never set).
-    // Subsequent batches must NOT re-parse from DOM to prevent Feed/Home/Search
-    // numbers (e.g. 5574 impressions) from overwriting the frozen header total.
     if (!this.totalConnections || this.totalConnections === 0) {
       const domTotal = extractTotalConnectionsFromDom();
       if (domTotal && domTotal > 0) {
         this.totalConnections = domTotal;
         this.expectedTotal = domTotal;
-        // actualProfiles = linkedIn header - 1 (exclude the account owner)
         this.actualProfiles = domTotal > 1 ? domTotal - 1 : domTotal;
       }
     }
-    // ────────────────────────────────────────────────────────────────────────
+
+    // Step 1: Initial extraction of cards visible in initial view
+    this.state = "acquiring";
+    this.statusMessage = "Mapping your network...";
+    const initialScan = this.scanCurrentPageForUnseen();
+    if (initialScan.newProfilesCount > 0) {
+      await this.checkpointSession();
+    }
+
+    let consecutiveZeroProgressCount = 0;
+    const MAX_ZERO_PROGRESS = 4;
 
     while (!this.shouldCancel) {
+      // 1. Guard route: must remain on approved connections page
       if (!isConnectionsPage()) {
         this.state = "paused";
         this.statusMessage = "Return to Connections to continue syncing.";
@@ -2342,142 +2235,84 @@ class ConnectionAcquisitionSession {
         break;
       }
 
-      this.pageCount++;
-
-      // STEP 1: Begin Batch -> Overlay changes to "Building"
-      this.state = "acquiring";
-      this.activeFilter = extractActiveFilterFromDom();
-      const initialCount = this.connections.size;
-      const expectedText = this.expectedTotal ? ` of ${this.expectedTotal}` : '';
-      this.statusMessage = `Building your relationship graph (${initialCount}${expectedText})...`;
-      await this.checkpointSession();
-
-      let batchNewProfilesCount = 0;
-      let batchDuplicatesSkipped = 0;
-      let batchVisibleCardsCount = 0;
-
-      // STEP 2 & 3 & 4: Smart Scrolling & DOM Mutation Detection Loop
-      let scrollAttemptsInBatch = 0;
-      const MAX_SCROLL_ATTEMPTS_PER_BATCH = 6;
-
-      while (!this.shouldCancel) {
-        if (!isConnectionsPage()) {
-          this.state = "paused";
-          this.statusMessage = "Return to Connections to continue syncing.";
-          if (this.nextBatchAt && this.nextBatchAt > Date.now()) {
-            this.pausedRemainingMs = this.nextBatchAt - Date.now();
-          }
-          await this.checkpointSession();
-          return;
-        }
-
-        scrollAttemptsInBatch++;
-        const initialDomCardCount = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]').length : 0;
-
-        // Perform smart scroll (human cadence)
-        const loadRes = await this.triggerContainerLoad(this.pageCount);
-
-        // Wait for DOM mutation (MutationObserver driven)
-        const waitRes = await this.waitForDomCardsToIncrease(initialDomCardCount, 1500, loadRes.container);
-
-        // Scan page for new unseen cards
-        const scanRes = this.scanCurrentPageForUnseen();
-        batchNewProfilesCount += scanRes.newProfilesCount;
-        batchDuplicatesSkipped += scanRes.duplicatesSkippedCount;
-        batchVisibleCardsCount = scanRes.totalVisibleCards;
-
-        // NOTE: Do NOT re-parse DOM total here. totalConnections is frozen once
-        // at session start to prevent Feed/Home DOM numbers from corrupting it.
-
-        // If new profiles discovered: break out of scroll loop to complete batch!
-        if (scanRes.newProfilesCount > 0) {
-          consecutiveZeroNewCardScrolls = 0;
-          break;
-        }
-
-        // Duplicate-only batch (0 new profiles): continue scrolling until new cards found
-        consecutiveZeroNewCardScrolls++;
-
-        const hasLoader = !!(typeof document !== "undefined" && typeof document.querySelector === "function" ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]') : null);
-
-        // Structured console debug log for duplicate-only batch
-        console.log(`[Batch ${this.pageCount}]\nVisible cards: ${batchVisibleCardsCount}\nNew profiles: 0\n\nScrolling for additional cards...`);
-
-        if (consecutiveZeroNewCardScrolls >= MAX_ZERO_NEW_CARD_SCROLLS && !hasLoader) {
-          break;
-        }
-
-        if (scrollAttemptsInBatch >= MAX_SCROLL_ATTEMPTS_PER_BATCH) {
-          break;
-        }
-      }
-
-      // STEP 5: Increment extractedConnections, persist session, update overlay immediately
+      // 2. Check if target reached
       const currentCount = this.connections.size;
-      const nextDelayMs = getRandomAcquisitionDelayMs();
-      const nextDelaySec = Math.round(nextDelayMs / 1000);
-
-      // Calculate estimated remaining time (Section 8 formula)
-      const now = Date.now();
-      if (this.lastBatchStartTime) {
-        const batchDur = now - this.lastBatchStartTime;
-        if (!this.batchDurations) this.batchDurations = [];
-        this.batchDurations.push(batchDur);
-        if (this.batchDurations.length > 5) this.batchDurations.shift();
-      }
-      this.lastBatchStartTime = now;
-      const avgBatchMs = (this.batchDurations && this.batchDurations.length > 0)
-        ? Math.round(this.batchDurations.reduce((a, b) => a + b, 0) / this.batchDurations.length)
-        : 12000;
-      const remainingProfiles = Math.max(0, (this.actualProfiles || this.expectedTotal || 0) - currentCount);
-      const avgNewPerBatch = Math.max(1, batchNewProfilesCount || 8);
-      const remainingBatches = Math.ceil(remainingProfiles / avgNewPerBatch);
-      this.estimatedRemainingMs = remainingBatches * (avgBatchMs + nextDelayMs);
-
-      // Structured console debug log for batch completion
-      console.log(`[Batch ${this.pageCount}]\nVisible cards: ${batchVisibleCardsCount}\nNew profiles: ${batchNewProfilesCount}\nDuplicates skipped: ${batchDuplicatesSkipped}\n\nExtracted total: ${currentCount}/${this.expectedTotal || currentCount}\n\nNext delay: ${nextDelaySec}s`);
-
-      // Persist session immediately after successful batch
-      await this.checkpointSession();
-
-      // Check completion conditions
-      const hasLoader = !!(typeof document !== "undefined" && typeof document.querySelector === "function" ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]') : null);
-
-      const targetActual = this.actualProfiles || this.expectedTotal;
-      if ((targetActual > 0 && currentCount >= targetActual) || (consecutiveZeroNewCardScrolls >= MAX_ZERO_NEW_CARD_SCROLLS && !hasLoader)) {
-        this.state = "resting";
-        this.completionStatus = "complete";
-        this.syncStatus = "synced";
-        this.isPartial = false;
-        this.statusMessage = "You're all caught up ✨";
-        this.nextBatchAt = null;
-        this.nextSyncDelay = 0;
-        this.countdownSeconds = 0;
-        this.pausedRemainingMs = null;
-        this.estimatedRemainingMs = null;
-        await this.checkpointSession();
-        await this.autoSyncToBackend();
+      const targetCount = this.actualProfiles || this.expectedTotal || 0;
+      if (targetCount > 0 && currentCount >= targetCount) {
+        await this.finishSessionAsComplete();
         break;
       }
 
-      // STEP 6: Return overlay to "Waiting" with fresh random delay (8-30s)
-      this.nextSyncDelay = nextDelayMs;
-      this.nextBatchAt = Date.now() + nextDelayMs;
-      this.nextSyncAt = new Date(this.nextBatchAt).toISOString();
+      this.pageCount++;
+
+      // 3. Before traversal: capture visible profile keys and container state
+      const keysBefore = this.getVisibleProfileKeys();
+      const container = this.resolveScrollContainer();
+
+      // 4. Perform traversal (scroll or Load More click)
       this.state = "waiting";
-      this.statusMessage = `Next batch in ${nextDelaySec}s`;
+      this.statusMessage = "Loading connections...";
+      const traversal = await this.performTraversalStep(container);
+
+      // 5. Pacing delay: allow LinkedIn enough time to render
+      // Human-paced ~7-10s interval (or TEST_ACQUISITION_DELAY_MS in automated tests)
+      const delayMs = getRandomAcquisitionDelayMs();
+      const delaySec = Math.round(delayMs / 1000);
+      this.nextSyncDelay = delayMs;
+      this.nextBatchAt = Date.now() + delayMs;
+      this.nextSyncAt = new Date(this.nextBatchAt).toISOString();
+      this.statusMessage = `Next batch in ${delaySec}s`;
       await this.checkpointSession();
 
-      // Inter-batch delay driven by nextBatchAt & background alarm
       await this.waitForNextBatch(this.nextBatchAt);
-      this.countdownSeconds = 0;
+
+      if (this.shouldCancel) break;
+
+      // 6. After traversal: extract all newly exposed cards
+      this.state = "acquiring";
+      this.statusMessage = "Mapping your network...";
+      const scanRes = this.scanCurrentPageForUnseen();
+
+      // 7. Check for new profile keys
+      if (scanRes.newProfilesCount > 0) {
+        consecutiveZeroProgressCount = 0;
+        await this.checkpointSession();
+
+        // Check if target reached
+        if (targetCount > 0 && this.connections.size >= targetCount) {
+          await this.finishSessionAsComplete();
+          break;
+        }
+      } else {
+        // No new profiles in this batch — assess whether we're genuinely exhausted
+        const hasLoader = !!(document.querySelector && document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]'));
+        const hasLoadMore = !!this.findLoadMoreButton();
+
+        // Count zero progress when:
+        // - we're at the bottom with no loader/load-more, OR
+        // - scroll didn't actually move (wrong container or truly at max scroll)
+        const scrollStuck = (traversal.method === "scroll" && traversal.moved === false);
+        if ((!hasLoader && !hasLoadMore && traversal.isAtBottom) || (scrollStuck && !hasLoader && !hasLoadMore)) {
+          consecutiveZeroProgressCount++;
+        } else if (hasLoader) {
+          // Something is loading — give it more time, don't count as zero progress
+          consecutiveZeroProgressCount = Math.max(0, consecutiveZeroProgressCount - 1);
+        }
+
+        // List reached bottom and confirmed exhausted over multiple attempts
+        if (consecutiveZeroProgressCount >= MAX_ZERO_PROGRESS) {
+          await this.finishSessionAsComplete();
+          break;
+        }
+      }
     }
 
     if (this.shouldCancel) {
-      this.state = "idle";
-      this.statusMessage = "Acquisition cancelled.";
+      this.state = "paused";
+      this.statusMessage = "Acquisition stopped. Progress saved.";
       await this.checkpointSession();
     }
+
     if (typeof window !== "undefined") {
       window.__warmgraphAcquisitionRunning = false;
     }
@@ -2529,6 +2364,7 @@ class ConnectionAcquisitionSession {
     }
 
     // CASE D — Live Lower (Archive & Full Rebuild)
+    const liveActual = liveTotal > 1 ? liveTotal - 1 : liveTotal;
     if (storedActual > 0 && liveActual < storedActual) {
       if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
         try {
@@ -2622,7 +2458,12 @@ class ConnectionAcquisitionSession {
 
   cancel() {
     this.shouldCancel = true;
-    this.state = "idle";
+    this.state = "paused";
+    this.statusMessage = "Extraction stopped. Progress saved.";
+    if (this.nextBatchResolver) {
+      this.nextBatchResolver();
+      this.nextBatchResolver = null;
+    }
     this.checkpointSessionSync();
     return { success: true };
   }
@@ -2887,53 +2728,104 @@ if (typeof window !== "undefined") {
   window.extractTotalConnectionsFromDom = extractTotalConnectionsFromDom;
 }
 
-async function maybeAutoStartAcquisition() {
-  await acquisitionSession.initOrHydrateSession();
-  const isConn = isConnectionsPage();
-
-  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(["currentSession"], (res) => {
-      const cs = res && res.currentSession;
-      if (cs) {
-        console.log({
-          running: !!(typeof window !== "undefined" && window.__warmgraphAcquisitionRunning),
-          state: cs.state,
-          nextBatchAt: cs.nextBatchAt
-        });
-      }
-    });
-  }
-
-  if (isConn) {
-    const extractedCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
-    const targetCount = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
-    if (targetCount > 0 && extractedCount >= targetCount) {
-      acquisitionSession.state = "completed";
-      acquisitionSession.checkpointSessionSync();
-    } else if (!window.__warmgraphAcquisitionRunning) {
-      acquisitionSession.start();
-    }
-  } else {
-    // We are on a NON-Connections page (e.g. Feed, Home, Jobs, etc.)
+let isEnsuringAcquisition = false;
+async function ensureConnectionsAcquisition() {
+  if (isEnsuringAcquisition) return;
+  if (!isConnectionsPage()) {
     if (
-      acquisitionSession.state === "acquiring" ||
-      acquisitionSession.state === "waiting" ||
-      acquisitionSession.state === "building" ||
-      acquisitionSession.state === "waiting_for_content" ||
-      acquisitionSession.state === "settling" ||
-      acquisitionSession.state === "interrupted"
+      acquisitionSession &&
+      (acquisitionSession.isRunning ||
+        ["acquiring", "waiting", "building", "waiting_for_content", "settling"].includes(acquisitionSession.state))
     ) {
+      acquisitionSession.shouldCancel = true;
       acquisitionSession.state = "paused";
       acquisitionSession.statusMessage = "Return to Connections to continue syncing.";
-      if (acquisitionSession.nextBatchAt && acquisitionSession.nextBatchAt > Date.now()) {
-        acquisitionSession.pausedRemainingMs = acquisitionSession.nextBatchAt - Date.now();
+      if (acquisitionSession.nextBatchResolver) {
+        acquisitionSession.nextBatchResolver();
+        acquisitionSession.nextBatchResolver = null;
       }
       acquisitionSession.checkpointSessionSync();
     }
+    return;
+  }
+
+  isEnsuringAcquisition = true;
+  try {
+    // 1. Establish owner identity immediately
+    await detectAndPersistOwnerIdentity();
+
+    // 2. Hydrate session from storage
+    await acquisitionSession.initOrHydrateSession();
+
+    // 3. Make sure overlay is visible
+    acquisitionSession.checkpointSessionSync();
+
+    // 4. Check if session was already completed
+    const extractedCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
+    const targetCount = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
+    if (targetCount > 0 && extractedCount >= targetCount && acquisitionSession.completionStatus === "complete") {
+      acquisitionSession.state = "completed";
+      acquisitionSession.checkpointSessionSync();
+      return;
+    }
+
+    // 5. Start acquisition if not already running
+    if (!acquisitionSession.isRunning && !window.__warmgraphAcquisitionRunning) {
+      acquisitionSession.start();
+    }
+  } finally {
+    isEnsuringAcquisition = false;
   }
 }
 
-setTimeout(maybeAutoStartAcquisition, 100);
+let routeDebounceTimer = null;
+function handleRouteChange() {
+  if (routeDebounceTimer) clearTimeout(routeDebounceTimer);
+  routeDebounceTimer = setTimeout(() => {
+    ensureConnectionsAcquisition();
+  }, 250);
+}
+
+function hookHistoryEvents() {
+  if (typeof window === "undefined" || window.__warmgraphHistoryHooked) return;
+  window.__warmgraphHistoryHooked = true;
+
+  const dispatchRouteChange = () => {
+    window.dispatchEvent(new CustomEvent("warmgraph:routechange"));
+  };
+
+  const origPushState = window.history.pushState;
+  if (typeof origPushState === "function") {
+    window.history.pushState = function (...args) {
+      const res = origPushState.apply(this, args);
+      dispatchRouteChange();
+      return res;
+    };
+  }
+
+  const origReplaceState = window.history.replaceState;
+  if (typeof origReplaceState === "function") {
+    window.history.replaceState = function (...args) {
+      const res = origReplaceState.apply(this, args);
+      dispatchRouteChange();
+      return res;
+    };
+  }
+
+  window.addEventListener("popstate", dispatchRouteChange);
+  window.addEventListener("warmgraph:routechange", handleRouteChange);
+
+  let currentUrl = window.location.href;
+  setInterval(() => {
+    if (window.location.href !== currentUrl) {
+      currentUrl = window.location.href;
+      dispatchRouteChange();
+    }
+  }, 500);
+}
+
+hookHistoryEvents();
+setTimeout(ensureConnectionsAcquisition, 100);
 
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
@@ -3103,7 +2995,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "cancelCollection":
       case "cancelAcquisition": {
         acquisitionSession.cancel();
-        acquisitionSession.reset(true);
         sendResponse({
           success: true,
           status: acquisitionSession.getStatus()

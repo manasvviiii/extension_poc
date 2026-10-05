@@ -588,7 +588,7 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
                 const ownerRecord = stored.warmgraph_owner;
                 if (ownerRecord?.ownerId) {
                   ownerIdVal = ownerRecord.ownerId;
-                } else if (stored.ownerId && !stored.ownerId.startsWith("warmgraph_")) {
+                } else if (stored.ownerId) {
                   ownerIdVal = stored.ownerId;
                 }
               }

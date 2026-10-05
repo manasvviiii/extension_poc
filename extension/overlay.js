@@ -539,9 +539,9 @@
       case "resumed":
         return {
           stateKey: "collecting",
-          badgeText: "Building",
+          badgeText: "Mapping",
           badgeClass: "warmgraph-status-building",
-          title: "Building your network",
+          title: "Mapping your network",
           desc: "We're organizing your professional connections so you can discover warm introductions later.",
           activities: [
             { icon: "✓", text: "Connections collected", status: "done" },
@@ -557,9 +557,9 @@
       case "waiting_for_content":
         return {
           stateKey: "waiting",
-          badgeText: "Building",
+          badgeText: "Loading",
           badgeClass: "warmgraph-status-building",
-          title: "Loading more connections",
+          title: "Waiting for LinkedIn",
           desc: "WarmGraph is waiting for the next part of your network to appear.",
           activities: [
             { icon: "✓", text: "Connections collected", status: "done" },
@@ -991,6 +991,11 @@
           const session = (res && res.currentSession) || (res && res.acquisition_session) || null;
           if (session) {
             this.update(session);
+          } else {
+            const isConn = (typeof window !== "undefined" && window.location && (window.location.pathname.includes("/connections") || window.location.href.includes("/connections") || window.location.href.includes("connections.html")));
+            if (isConn) {
+              this.update({ state: "acquiring", extractedConnections: 0, actualProfiles: 0 });
+            }
           }
         });
       }
@@ -1045,7 +1050,9 @@
 
       if (!this.container) this.createDOM();
 
-      const shouldShow = (
+      const isConn = (typeof window !== "undefined" && window.location && (window.location.pathname.includes("/connections") || window.location.href.includes("/connections") || window.location.href.includes("connections.html")));
+
+      const shouldShow = isConn || (
         state === "preparing" ||
         state === "acquiring" ||
         state === "collecting" ||
