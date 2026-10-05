@@ -1893,23 +1893,55 @@ class ConnectionAcquisitionSession {
     const domCards = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
     const processedCardRoots = new Set();
 
+    let validProfileUrls = 0;
+    let candidateCards = 0;
+    let normalizedKeys = 0;
+    let alreadyKnown = 0;
+    const rejectionReasons = {
+      no_valid_url: 0,
+      no_card_root: 0,
+      duplicate_card_root: 0,
+      no_profile_anchor: 0,
+      not_first_degree: 0,
+      already_known: 0
+    };
+
     for (const anchor of domCards) {
       const profileUrl = normalizeProfileUrl(anchor.href);
-      if (!profileUrl) continue;
+      if (!profileUrl) {
+        rejectionReasons.no_valid_url++;
+        continue;
+      }
+      validProfileUrls++;
 
       const card = getCardRoot(anchor);
-      if (!card || processedCardRoots.has(card)) continue;
+      if (!card) {
+        rejectionReasons.no_card_root++;
+        continue;
+      }
+
+      if (processedCardRoots.has(card)) {
+        rejectionReasons.duplicate_card_root++;
+        continue;
+      }
+      processedCardRoots.add(card);
+      candidateCards++;
 
       const profileAnchor = getProfileAnchor(card);
-      if (!profileAnchor) continue;
-
-      processedCardRoots.add(card);
+      if (!profileAnchor) {
+        rejectionReasons.no_profile_anchor++;
+        continue;
+      }
 
       const firstDegree = extractFirstDegreeCard(card, profileAnchor);
       if (firstDegree) {
         const key = this.getDeduplicationKey(firstDegree);
+        if (key) normalizedKeys++;
+
         if (this.seenProfiles.has(key)) {
+          alreadyKnown++;
           duplicatesSkippedCount++;
+          rejectionReasons.already_known++;
           const existing = this.connections.get(key);
           if (existing) {
             this.connections.set(key, mergeRecord(existing, firstDegree));
@@ -1926,16 +1958,34 @@ class ConnectionAcquisitionSession {
       const evidence = extractRelationshipEvidence(card, profileAnchor);
       if (evidence) {
         const key = `${this.getDeduplicationKey(evidence)}|${evidence.observed_degree}`;
+        if (key) normalizedKeys++;
+
         if (this.seenProfiles.has(key)) {
+          alreadyKnown++;
           duplicatesSkippedCount++;
+          rejectionReasons.already_known++;
         } else {
           this.seenProfiles.add(key);
           this.relationshipEvidence.set(key, evidence);
           relationshipEvidenceStore.set(key, evidence);
           newProfilesCount++;
         }
+      } else {
+        rejectionReasons.not_first_degree++;
       }
     }
+
+    console.log("[WG_SCAN_DEBUG]", {
+      candidateCards,
+      validProfileUrls,
+      normalizedKeys,
+      alreadyKnown,
+      newKeys: newProfilesCount,
+      domAnchorsCount: domCards.length,
+      rejectionReasons,
+      seenProfilesTotal: this.seenProfiles.size,
+      connectionsTotal: this.connections.size
+    });
 
     this.lastBatchNewConnections = newProfilesCount;
 
@@ -2074,39 +2124,52 @@ class ConnectionAcquisitionSession {
       } catch (_) {}
     }
 
-    // 2. Container or Window Scroll
+    // 2. Scroll both inner container (if non-doc) AND window to ensure listeners trigger
     const scrollStep = Math.max(500, Math.floor(clientHeight * 0.75));
     let moved = false;
 
     if (container && !isDoc) {
       const prev = container.scrollTop;
       container.scrollTop = Math.min(scrollHeight - clientHeight, container.scrollTop + scrollStep);
-      moved = (container.scrollTop !== prev);
-      container.dispatchEvent(new Event("scroll", { bubbles: true }));
+      if (container.scrollTop !== prev) moved = true;
+      try {
+        container.dispatchEvent(new Event("scroll", { bubbles: true }));
+        container.dispatchEvent(new WheelEvent("wheel", { deltaY: scrollStep, bubbles: true }));
+      } catch (_) {}
     }
 
-    if (!moved || isDoc) {
-      const prevWinY = window.scrollY || 0;
-      if (typeof window.scrollBy === "function") {
-        window.scrollBy({ top: scrollStep, behavior: "instant" });
-      } else {
-        const scroller = document.scrollingElement || document.documentElement || document.body;
-        if (scroller) scroller.scrollTop = (scroller.scrollTop || 0) + scrollStep;
-      }
-      const newWinY = window.scrollY || 0;
-      if (newWinY !== prevWinY) moved = true;
+    const prevWinY = window.scrollY || 0;
+    if (typeof window.scrollBy === "function") {
+      window.scrollBy({ top: scrollStep, behavior: "instant" });
+    } else {
+      const scroller = document.scrollingElement || document.documentElement || document.body;
+      if (scroller) scroller.scrollTop = (scroller.scrollTop || 0) + scrollStep;
+    }
+    const newWinY = window.scrollY || 0;
+    if (newWinY !== prevWinY) moved = true;
+
+    try {
       window.dispatchEvent(new Event("scroll", { bubbles: true }));
-    }
+      window.dispatchEvent(new WheelEvent("wheel", { deltaY: scrollStep, bubbles: true }));
+      if (document.body) document.body.dispatchEvent(new Event("scroll", { bubbles: true }));
+    } catch (_) {}
 
-    // Also trigger intersection observers on sentinel / last card
-    const anchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
-    if (anchors.length > 0) {
-      const lastAnchor = anchors[anchors.length - 1];
-      const sentinel = (lastAnchor.closest && lastAnchor.closest('li, .mn-connection-card, [class*="card"]')) || lastAnchor;
-      if (sentinel && typeof sentinel.scrollIntoView === "function") {
-        try {
-          sentinel.scrollIntoView({ block: "end", behavior: "instant" });
-        } catch (_) {}
+    // 3. Scroll loader / sentinel / last card into view to awaken IntersectionObserver
+    const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"], .artdeco-spinner') : null;
+    if (loader && typeof loader.scrollIntoView === "function") {
+      try {
+        loader.scrollIntoView({ block: "end", behavior: "instant" });
+      } catch (_) {}
+    } else {
+      const anchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
+      if (anchors.length > 0) {
+        const lastAnchor = anchors[anchors.length - 1];
+        const sentinel = (lastAnchor.closest && lastAnchor.closest('li, .mn-connection-card, [class*="card"]')) || lastAnchor;
+        if (sentinel && typeof sentinel.scrollIntoView === "function") {
+          try {
+            sentinel.scrollIntoView({ block: "end", behavior: "instant" });
+          } catch (_) {}
+        }
       }
     }
 
@@ -2455,38 +2518,80 @@ class ConnectionAcquisitionSession {
           const newKeysBefore = this.scanCurrentPageForUnseen().newProfilesCount;
 
           // Controlled recovery per attempt:
-          // Attempt 1: Passive 1.5s wait for DOM to render existing pending cards
-          // Attempt 2: Active scroll nudge (-150px then +250px) to awaken LinkedIn's IntersectionObserver
-          // Attempt 3: Check Load More button OR sentinel scrollIntoView on last card anchor
-          if (attempt === 2) {
+          // Attempt 1: Scroll nudge (-250px then +400px into loader/sentinel) + dispatch scroll & wheel events
+          // Attempt 2: Load More button click OR deep sentinel scrollIntoView + PageDown event
+          // Attempt 3: Deep scroll nudge (-500px then bottom) + re-scan
+          if (attempt === 1) {
             if (!activeIsDoc && activeContainer) {
-              activeContainer.scrollTop = Math.max(0, activeContainer.scrollTop - 150);
+              activeContainer.scrollTop = Math.max(0, activeContainer.scrollTop - 250);
               activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
-              await new Promise(r => setTimeout(r, 200));
-              activeContainer.scrollTop = activeContainer.scrollTop + 250;
-              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
-            } else {
-              if (typeof window.scrollBy === "function") {
-                window.scrollBy({ top: -150, behavior: "instant" });
-                window.dispatchEvent(new Event("scroll", { bubbles: true }));
-                await new Promise(r => setTimeout(r, 200));
-                window.scrollBy({ top: 250, behavior: "instant" });
-                window.dispatchEvent(new Event("scroll", { bubbles: true }));
-              }
+              activeContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: -250, bubbles: true }));
             }
-          } else if (attempt === 3) {
+            if (typeof window.scrollBy === "function") {
+              window.scrollBy({ top: -250, behavior: "instant" });
+              window.dispatchEvent(new Event("scroll", { bubbles: true }));
+              window.dispatchEvent(new WheelEvent("wheel", { deltaY: -250, bubbles: true }));
+            }
+            await new Promise(r => setTimeout(r, 200));
+
+            if (!activeIsDoc && activeContainer) {
+              activeContainer.scrollTop = activeContainer.scrollTop + 400;
+              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
+              activeContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: 400, bubbles: true }));
+            }
+            if (typeof window.scrollBy === "function") {
+              window.scrollBy({ top: 400, behavior: "instant" });
+              window.dispatchEvent(new Event("scroll", { bubbles: true }));
+              window.dispatchEvent(new WheelEvent("wheel", { deltaY: 400, bubbles: true }));
+            }
+
+            const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"], .artdeco-spinner') : null;
+            if (loader && typeof loader.scrollIntoView === "function") {
+              try { loader.scrollIntoView({ block: "end", behavior: "instant" }); } catch (_) {}
+            }
+          } else if (attempt === 2) {
             const loadMoreBtn = this.findLoadMoreButton();
             if (loadMoreBtn) {
               try { loadMoreBtn.click(); } catch (_) {}
-            } else {
-              const anchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
-              if (anchors.length > 0) {
-                const lastAnchor = anchors[anchors.length - 1];
-                const sentinel = (lastAnchor.closest && lastAnchor.closest('li, .mn-connection-card, [class*="card"]')) || lastAnchor;
-                if (sentinel && typeof sentinel.scrollIntoView === "function") {
-                  try { sentinel.scrollIntoView({ block: "end", behavior: "instant" }); } catch (_) {}
-                }
-              }
+            }
+            const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"], .artdeco-spinner') : null;
+            const anchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
+            const lastAnchor = anchors.length > 0 ? anchors[anchors.length - 1] : null;
+            const targetEl = loader || (lastAnchor ? (lastAnchor.closest('li, .mn-connection-card, [class*="card"]') || lastAnchor) : null);
+            if (targetEl && typeof targetEl.scrollIntoView === "function") {
+              try {
+                targetEl.scrollIntoView({ block: "center", behavior: "instant" });
+                await new Promise(r => setTimeout(r, 100));
+                targetEl.scrollIntoView({ block: "end", behavior: "instant" });
+              } catch (_) {}
+            }
+            try {
+              window.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }));
+              window.dispatchEvent(new WheelEvent("wheel", { deltaY: 600, bubbles: true }));
+            } catch (_) {}
+          } else if (attempt === 3) {
+            if (!activeIsDoc && activeContainer) {
+              activeContainer.scrollTop = Math.max(0, activeContainer.scrollTop - 500);
+              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
+              activeContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: -500, bubbles: true }));
+            }
+            if (typeof window.scrollBy === "function") {
+              window.scrollBy({ top: -500, behavior: "instant" });
+              window.dispatchEvent(new Event("scroll", { bubbles: true }));
+              window.dispatchEvent(new WheelEvent("wheel", { deltaY: -500, bubbles: true }));
+            }
+            await new Promise(r => setTimeout(r, 200));
+
+            const maxScroll = activeIsDoc
+              ? (document.documentElement ? document.documentElement.scrollHeight : 10000)
+              : (activeContainer ? activeContainer.scrollHeight : 10000);
+            if (!activeIsDoc && activeContainer) {
+              activeContainer.scrollTop = maxScroll;
+              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
+            }
+            if (typeof window.scrollTo === "function") {
+              window.scrollTo({ top: maxScroll, behavior: "instant" });
+              window.dispatchEvent(new Event("scroll", { bubbles: true }));
             }
           }
 
@@ -2528,15 +2633,12 @@ class ConnectionAcquisitionSession {
           continue;
         }
 
-        // Bounded recovery completed without new keys — evaluate genuine exhaustion
-        const hasLoader = !!(document.querySelector && document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]'));
-        const hasLoadMore = !!this.findLoadMoreButton();
+        // Bounded recovery completed without new keys — increment zero progress count
+        consecutiveZeroProgressCount++;
 
-        const scrollStuck = (traversal.method === "scroll" && traversal.moved === false);
-        if ((!hasLoader && !hasLoadMore && traversal.isAtBottom) || (scrollStuck && !hasLoader && !hasLoadMore)) {
-          consecutiveZeroProgressCount++;
-        } else if (hasLoader) {
-          consecutiveZeroProgressCount = Math.max(0, consecutiveZeroProgressCount - 1);
+        if (targetCount > 0 && this.connections.size >= targetCount) {
+          await this.finishSessionAsComplete();
+          break;
         }
 
         if (consecutiveZeroProgressCount >= MAX_ZERO_PROGRESS) {
