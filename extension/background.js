@@ -223,7 +223,7 @@ function saveStoredSession(session) {
           progressPercent: rawPct,
           importedRecords: imported,
           state: canonicalState,
-          syncStatus: isComplete ? "synced" : (session.syncStatus || session.sync_status || "idle"),
+          syncStatus: session.syncStatus || session.sync_status || (previous && previous.syncStatus) || "idle",
           lastSyncedAt: session.lastSyncedAt || session.last_synced_at || null,
           nextBatchAt: session.nextBatchAt || null,
           estimatedRemainingMs: session.estimatedRemainingMs || session.pausedRemainingMs || null,
@@ -581,13 +581,26 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
               session = await getStoredSession();
             }
 
+            const logAutoSync = (phase, ownerId, connectionCount, expectedCount, status, error) => {
+              console.log("[WG_AUTO_SYNC]", JSON.stringify({
+                phase,
+                ownerId: ownerId || null,
+                connectionCount: connectionCount ?? 0,
+                expectedCount: expectedCount ?? 0,
+                status: status || null,
+                error: error || null
+              }));
+            };
+
+            let ownerIdVal = message?.ownerId || message?.owner_id || null;
+            let expectedTotalVal = 0;
+
             try {
               const BACKEND_URL = "http://127.0.0.1:8000";
 
               // 1. Read warmgraph_owner
               console.log("[SYNC] Reading owner");
-              let ownerIdVal = null;
-              if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+              if (!ownerIdVal && typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
                 const stored = await new Promise(r => chrome.storage.local.get(["warmgraph_owner", "ownerId"], res => r(res || {})));
                 const ownerRecord = stored.warmgraph_owner;
                 if (ownerRecord?.ownerId) {
@@ -599,11 +612,12 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
 
               if (!ownerIdVal) {
                 console.log("[SYNC] Error: Owner identity not detected");
+                logAutoSync("ERROR", null, 0, 0, "OWNER_MISSING", "Cannot sync: Owner identity not detected.");
                 sendResponse({ success: false, error: "Cannot sync: Owner identity not detected." });
                 return;
               }
 
-              // 2. Read warmgraph_active_graph.connections
+              // 2. Read connections & evidence
               console.log("[SYNC] Reading local graph");
               const storedData = await new Promise(r => {
                 if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
@@ -614,8 +628,19 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
               });
 
               const activeConns = storedData?.warmgraph_active_graph?.connections || [];
-              const connectionsList = activeConns.length > 0 ? activeConns : (session?.collectedConnections || session?.connections || []);
-              const evidenceList = session?.relationshipEvidence || session?.relationship_evidence || [];
+              const msgConns = Array.isArray(message?.connections) && message.connections.length > 0 ? message.connections : null;
+              const connectionsList = msgConns || (activeConns.length > 0 ? activeConns : (session?.collectedConnections || session?.connections || []));
+              const msgEv = Array.isArray(message?.relationship_evidence) ? message.relationship_evidence : (Array.isArray(message?.relationshipEvidence) ? message.relationshipEvidence : null);
+              const evidenceList = msgEv || (session?.relationshipEvidence || session?.relationship_evidence || []);
+
+              expectedTotalVal = message?.expectedTotal || message?.expected_total || session?.expectedTotal || session?.actualProfiles || connectionsList.length;
+              const msgCompletionStatus = message?.completionStatus || message?.completion_status;
+              const isComplete = (session?.actualProfiles > 0 && session?.extractedConnections >= session?.actualProfiles) ||
+                (expectedTotalVal > 0 && connectionsList.length >= expectedTotalVal) ||
+                msgCompletionStatus === "complete";
+              const completionStatusVal = isComplete ? "complete" : (msgCompletionStatus || session?.completionStatus || "complete");
+
+              logAutoSync("BACKGROUND_RECEIVED", ownerIdVal, connectionsList.length, expectedTotalVal, "syncing", null);
 
               // Required logging per specification
               console.log("[SYNC] Uploading to backend");
@@ -637,9 +662,9 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
                 confirmed: true,
                 connections: connectionsList,
                 relationship_evidence: evidenceList,
-                expected_total: session?.expectedTotal || connectionsList.length,
+                expected_total: expectedTotalVal,
                 collected_total: connectionsList.length,
-                completion_status: session?.completionStatus || "complete"
+                completion_status: completionStatusVal
               };
 
               let isSuccess = false;
@@ -647,6 +672,7 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
 
               if (typeof fetch === "function") {
                 // 3. POST /network/import
+                logAutoSync("IMPORT", ownerIdVal, connectionsList.length, expectedTotalVal, "POST /network/import", null);
                 const response = await fetch(`${BACKEND_URL}/network/import`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -658,21 +684,26 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
                   const errJson = await response.json().catch(() => ({}));
                   errMsg = errJson.detail || `Backend error (HTTP ${response.status})`;
                   console.log("[SYNC] POST /network/import failed:", errMsg);
+                  logAutoSync("ERROR", ownerIdVal, connectionsList.length, expectedTotalVal, `IMPORT_HTTP_${response.status}`, errMsg);
                 } else {
                   console.log("[SYNC] POST /network/import 200 OK");
 
                   // 5. Verify GET /network/{owner}
+                  logAutoSync("NETWORK_FETCH", ownerIdVal, connectionsList.length, expectedTotalVal, "GET /network", null);
                   const netVer = await fetch(`${BACKEND_URL}/network/${encodeURIComponent(ownerIdVal)}`).catch(() => null);
                   if (!netVer || !netVer.ok) {
                     errMsg = "Backend sync failed: GET /network validation failed";
                     console.log("[SYNC] GET /network validation failed");
+                    logAutoSync("ERROR", ownerIdVal, connectionsList.length, expectedTotalVal, "NETWORK_FETCH_FAILED", errMsg);
                   } else {
                     console.log("[SYNC] GET /network 200 OK");
                     // Step 5 Verification 2: GET /graph/{owner}
+                    logAutoSync("GRAPH_FETCH", ownerIdVal, connectionsList.length, expectedTotalVal, "GET /graph", null);
                     const graphVer = await fetch(`${BACKEND_URL}/graph/${encodeURIComponent(ownerIdVal)}`).catch(() => null);
                     if (!graphVer || !graphVer.ok) {
                       errMsg = "Backend sync failed: GET /graph validation failed";
                       console.log("[SYNC] GET /graph validation failed");
+                      logAutoSync("ERROR", ownerIdVal, connectionsList.length, expectedTotalVal, "GRAPH_FETCH_FAILED", errMsg);
                     } else {
                       console.log("[SYNC] GET /graph 200 OK");
                       isSuccess = true;
@@ -708,6 +739,8 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
                   await saveStoredSession(session);
                 }
 
+                logAutoSync("COMPLETE", ownerIdVal, connectionsList.length, expectedTotalVal, "synced", null);
+
                 // 6. Broadcast SYNC_COMPLETE
                 if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
                   try {
@@ -729,6 +762,7 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
               }
             } catch (err) {
               console.log("[SYNC] Error during sync:", err.message);
+              logAutoSync("ERROR", ownerIdVal, 0, expectedTotalVal, "EXCEPTION", err.message);
               if (session) {
                 session.syncStatus = "failed";
                 session.sync_status = "failed";

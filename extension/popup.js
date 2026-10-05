@@ -576,7 +576,7 @@ function getHumanizedStateInfo(status) {
 
     case "idle":
     default:
-      if (collected > 0 && (status.completion_status === "complete" || status.completionStatus === "complete" || state === "resting" || state === "completed")) {
+      if (collected > 0 && actual > 0 && collected >= actual && (status.completion_status === "complete" || status.completionStatus === "complete" || state === "resting" || state === "completed")) {
         return {
           title: "You're all caught up ✨",
           badgeText: "Resting",
@@ -675,7 +675,7 @@ function updateAcquisitionDashboard(status) {
     }
   }
 
-  if (state === "resting" || (actual > 0 && extracted === actual)) {
+  if (actual > 0 && extracted >= actual && (state === "resting" || state === "completed")) {
     if (heroDisplayEl) heroDisplayEl.textContent = `${extracted} / ${actual} mapped`;
     if (heroLabelEl) heroLabelEl.textContent = `(100%)`;
     if (heroSecondaryEl) heroSecondaryEl.textContent = `All LinkedIn connections mapped`;
@@ -718,7 +718,7 @@ function updateAcquisitionDashboard(status) {
   }
 
   if (remainingEl) {
-    if (state === "resting" || extracted === actual) {
+    if (actual > 0 && extracted >= actual && (state === "resting" || state === "completed")) {
       remainingEl.textContent = `All ${extracted} catalogued (100%)`;
     } else if (actual > 0) {
       const missing = Math.max(0, actual - extracted);

@@ -1154,7 +1154,7 @@
 
       // Hero Subtitle (Show "All LinkedIn connections mapped" when complete)
       if (heroRemainingEl) {
-        if (state === "resting" || state === "completed" || displayLeft === displayRight) {
+        if ((state === "resting" || state === "completed" || pct === 100) && displayRight > 0 && displayLeft >= displayRight) {
           heroRemainingEl.textContent = "All LinkedIn connections mapped";
         } else if (displayRight > 0) {
           heroRemainingEl.textContent = `${remaining} remaining`;
@@ -1166,7 +1166,7 @@
       // Legacy subcount update for test suite assertions
       if (subcountEl) {
         let subText = "";
-        if (state === "resting" || state === "completed" || displayLeft === displayRight) {
+        if ((state === "resting" || state === "completed" || pct === 100) && displayRight > 0 && displayLeft >= displayRight) {
           subText = `${displayLeft} of ${displayRight} connections\n100% Complete`;
         } else if (displayRight > 0) {
           subText = `${displayLeft} of ${displayRight} connections\n${pct}% Complete`;

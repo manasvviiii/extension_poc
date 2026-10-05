@@ -1582,40 +1582,49 @@ class ConnectionAcquisitionSession {
     // content.js is the ONLY writer. overlay.js and popup.js are pure readers.
     const canonicalTotal = this.totalConnections || status.totalConnections || status.expected_total || 0;
     let rawExtracted = this.connections ? this.connections.size : (status.extractedConnections || status.collected_count || 0);
-    const canonicalStateRaw = status.state || "idle";
-    const isCompleteState = canonicalStateRaw === "resting" || canonicalStateRaw === "completed" || this.completionStatus === "complete";
 
-    let canonicalActual = (this.actualProfiles && this.actualProfiles > 0)
+    const targetProfiles = (this.actualProfiles && this.actualProfiles > 0)
       ? this.actualProfiles
-      : (isCompleteState && rawExtracted > 0 ? rawExtracted : (canonicalTotal > 0 ? canonicalTotal : rawExtracted));
+      : (this.expectedTotal && this.expectedTotal > 0 ? this.expectedTotal : (canonicalTotal > 0 ? canonicalTotal : rawExtracted));
 
-    if (isCompleteState && rawExtracted > 0) {
-      canonicalActual = rawExtracted;
-      this.actualProfiles = rawExtracted;
-    }
+    const canonicalActual = targetProfiles;
+    const isTargetReached = canonicalActual > 0 && rawExtracted >= canonicalActual;
+    const canonicalStateRaw = status.state || "idle";
 
-    const canonicalComplete = isCompleteState || (canonicalActual > 0 && rawExtracted >= canonicalActual);
+    // 100% completion requires target reached AND verified completion state
+    const canonicalComplete = isTargetReached && (canonicalStateRaw === "resting" || canonicalStateRaw === "completed" || this.completionStatus === "complete" || this.verifiedExhaustion);
     const canonicalExtracted = rawExtracted;
 
     let canonicalState = canonicalStateRaw;
     if ((canonicalStateRaw === "resting" || canonicalStateRaw === "completed") && !canonicalComplete) {
-      canonicalState = "paused";
+      canonicalState = "acquiring";
     }
 
     const canonicalPct = canonicalActual > 0
       ? (canonicalComplete ? 100 : Math.min(99, Math.round((canonicalExtracted / canonicalActual) * 100)))
       : (canonicalExtracted > 0 ? 100 : 0);
 
+    const effectiveCompletionStatus = canonicalComplete ? "complete" : "incomplete";
+
+    console.log("[WG_PROGRESS_STATE]", {
+      actualProfiles: rawExtracted,
+      targetProfiles: canonicalActual,
+      calculatedPercent: canonicalPct,
+      completionStatus: effectiveCompletionStatus,
+      syncStatus: this.syncStatus || status.sync_status || "idle",
+      phase: canonicalState
+    });
+
     const currentSessionObj = {
       sessionId: this.sessionId,
-      totalConnections: canonicalTotal,
+      totalConnections: canonicalTotal || canonicalActual,
       actualProfiles: canonicalActual,
       extractedConnections: canonicalExtracted,
       importedRecords: this.importedRecords,
       progressPercent: canonicalPct,
       state: canonicalState,
-      syncStatus: canonicalComplete ? "synced" : (this.syncStatus || status.sync_status || "idle"),
-      lastSyncedAt: canonicalComplete ? (this.lastSyncTimestamp || new Date().toISOString()) : (this.lastSyncTimestamp || null),
+      syncStatus: this.syncStatus || status.sync_status || "idle",
+      lastSyncedAt: this.lastSyncTimestamp || null,
       nextBatchAt: canonicalComplete ? null : (status.nextBatchAt || null),
       estimatedRemainingMs: canonicalComplete ? null : (this.estimatedRemainingMs || status.pausedRemainingMs || null),
       lastKnownActualProfiles: canonicalActual,
@@ -1655,7 +1664,7 @@ class ConnectionAcquisitionSession {
       relationship_evidence: status.relationship_evidence,
       relationshipEvidenceCount: status.relationship_evidence_count,
       pageCount: status.page_count,
-      completionStatus: status.completion_status,
+      completionStatus: effectiveCompletionStatus,
       isPartial: status.is_partial,
       statusMessage: status.status_message,
       syncStatus: this.syncStatus || status.sync_status || "idle",
@@ -1698,8 +1707,14 @@ class ConnectionAcquisitionSession {
           };
         }
 
-        chrome.storage.local.set(storagePayload);
-      } catch (e) {}
+        chrome.storage.local.set(storagePayload, () => {
+          if (typeof callback === "function") callback();
+        });
+      } catch (e) {
+        if (typeof callback === "function") callback();
+      }
+    } else {
+      if (typeof callback === "function") callback();
     }
 
     if (typeof window !== "undefined" && typeof window.updateWarmGraphOverlay === "function") {
@@ -1708,15 +1723,10 @@ class ConnectionAcquisitionSession {
   }
 
   checkpointSessionAsync() {
-    this.checkpointSessionSync();
     return new Promise((resolve) => {
-      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.get(["warmgraph_active_graph", "currentSession"], () => {
-          resolve();
-        });
-      } else {
+      this.checkpointSessionSync(() => {
         resolve();
-      }
+      });
     });
   }
 
@@ -2205,26 +2215,16 @@ class ConnectionAcquisitionSession {
 
     this.syncInFlight = true;
     const ownerId = await getOwnerId();
+    const connCount = this.connections.size;
+    const expCount = this.expectedTotal || this.connections.size;
 
-    // LOG 1: [WG_AUTO_SYNC] FINAL_STATE
-    console.log("[WG_AUTO_SYNC] FINAL_STATE", {
-      sessionId: this.sessionId,
+    console.log("[WG_AUTO_SYNC]", {
+      phase: "REQUEST",
       ownerId,
-      totalConnections: this.totalConnections || this.expectedTotal,
-      targetProfiles: this.actualProfiles || this.expectedTotal,
-      actualProfiles: this.connections.size,
-      completionStatus: this.completionStatus || "complete",
-      verifiedExhaustion: true,
-      connectionStoreCount: typeof connectionStore !== "undefined" ? connectionStore.size : 0,
-      checkpointConnectionCount: this.connections.size
-    });
-
-    // LOG 2: [WG_AUTO_SYNC] REQUEST
-    console.log("[WG_AUTO_SYNC] REQUEST", {
-      sessionId: this.sessionId,
-      connectionCount: this.connections.size,
-      expectedTotal: this.expectedTotal || this.totalConnections,
-      completionStatus: this.completionStatus || "complete"
+      connectionCount: connCount,
+      expectedCount: expCount,
+      status: this.state,
+      error: null
     });
 
     this.syncStatus = "syncing";
@@ -2234,15 +2234,26 @@ class ConnectionAcquisitionSession {
     try {
       let syncResult = null;
 
-      // Invoke canonical SYNC_NETWORK background path (same path as manual Sync Again)
+      const syncPayload = {
+        type: "SYNC_NETWORK",
+        action: "SYNC_NETWORK",
+        ownerId,
+        connections: Array.from(this.connections.values()),
+        relationship_evidence: Array.from(this.relationshipEvidence.values()),
+        expectedTotal: expCount,
+        totalConnections: this.totalConnections || expCount,
+        actualProfiles: this.actualProfiles || connCount,
+        completionStatus: this.completionStatus || "complete"
+      };
+
       if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
         syncResult = await new Promise((resolve) => {
           try {
-            chrome.runtime.sendMessage({ type: "SYNC_NETWORK", action: "SYNC_NETWORK" }, (res) => {
+            chrome.runtime.sendMessage(syncPayload, (res) => {
               if (chrome.runtime.lastError) {
                 resolve({ success: false, error: chrome.runtime.lastError.message });
               } else {
-                resolve(res || { success: true });
+                resolve(res || { success: false, error: "No response from background sync." });
               }
             });
           } catch (err) {
@@ -2259,16 +2270,20 @@ class ConnectionAcquisitionSession {
         this.autoSyncCompleted = true;
         this.syncInFlight = false;
 
-        console.log("[WG_AUTO_SYNC] SUCCESS", {
-          status: 200,
-          connectionCount: this.connections.size
+        console.log("[WG_AUTO_SYNC]", {
+          phase: "COMPLETE",
+          ownerId,
+          connectionCount: connCount,
+          expectedCount: expCount,
+          status: "synced",
+          error: null
         });
 
         await this.checkpointSessionAsync();
         return true;
       }
 
-      // Fallback direct POST /network/import if runtime message response was empty or failed
+      // Fallback direct POST /network/import if runtime message response returned error
       const payload = {
         owner_id: ownerId,
         source: "linkedin_dom",
@@ -2277,8 +2292,8 @@ class ConnectionAcquisitionSession {
         relationship_evidence: Array.from(this.relationshipEvidence.values()),
         page_type: getPageType(),
         page_url: window.location.href,
-        expected_total: this.expectedTotal || this.connections.size,
-        collected_total: this.connections.size,
+        expected_total: expCount,
+        collected_total: connCount,
         completion_status: this.completionStatus || "complete"
       };
 
@@ -2297,9 +2312,13 @@ class ConnectionAcquisitionSession {
           this.autoSyncCompleted = true;
           this.syncInFlight = false;
 
-          console.log("[WG_AUTO_SYNC] SUCCESS", {
-            status: res.status,
-            connectionCount: this.connections.size
+          console.log("[WG_AUTO_SYNC]", {
+            phase: "COMPLETE",
+            ownerId,
+            connectionCount: connCount,
+            expectedCount: expCount,
+            status: "synced",
+            error: null
           });
 
           await this.checkpointSessionAsync();
@@ -2313,8 +2332,12 @@ class ConnectionAcquisitionSession {
           this.lastSyncError = errMsg;
           this.syncInFlight = false;
 
-          console.log("[WG_AUTO_SYNC] FAILURE", {
-            status: res.status,
+          console.log("[WG_AUTO_SYNC]", {
+            phase: "ERROR",
+            ownerId,
+            connectionCount: connCount,
+            expectedCount: expCount,
+            status: "failed",
             error: errMsg
           });
 
@@ -2329,8 +2352,12 @@ class ConnectionAcquisitionSession {
       this.lastSyncError = errMsg;
       this.syncInFlight = false;
 
-      console.log("[WG_AUTO_SYNC] FAILURE", {
-        status: 500,
+      console.log("[WG_AUTO_SYNC]", {
+        phase: "ERROR",
+        ownerId,
+        connectionCount: connCount,
+        expectedCount: expCount,
+        status: "failed",
         error: errMsg
       });
 
@@ -2367,6 +2394,19 @@ class ConnectionAcquisitionSession {
     this.countdownSeconds = 0;
     this.pausedRemainingMs = null;
     this.estimatedRemainingMs = null;
+
+    console.log("[WG_AUTO_SYNC] FINAL_STATE", {
+      sessionId: this.sessionId,
+      ownerId: cachedOwnerId,
+      totalConnections: this.totalConnections || this.expectedTotal,
+      targetProfiles: this.actualProfiles || this.expectedTotal,
+      actualProfiles: this.connections.size,
+      state: this.state,
+      completionStatus: this.completionStatus || "complete",
+      verifiedExhaustion: true,
+      connectionStoreCount: typeof connectionStore !== "undefined" ? connectionStore.size : 0,
+      checkpointConnectionCount: this.connections.size
+    });
 
     // STEP 1 & 2: Await final checkpoint persistence so warmgraph_active_graph is written to disk BEFORE sync
     await this.checkpointSessionAsync();
@@ -2642,7 +2682,13 @@ class ConnectionAcquisitionSession {
         }
 
         if (consecutiveZeroProgressCount >= MAX_ZERO_PROGRESS) {
-          await this.finishSessionAsComplete();
+          if (targetCount > 0 && this.connections.size >= targetCount) {
+            await this.finishSessionAsComplete();
+          } else {
+            this.state = "paused";
+            this.statusMessage = "Extraction paused. Scroll page to render remaining connections.";
+            await this.checkpointSession();
+          }
           break;
         }
       }
