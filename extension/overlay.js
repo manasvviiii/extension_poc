@@ -555,16 +555,18 @@
 
       case "waiting":
       case "waiting_for_content":
+      case "waiting_for_render":
+      case "WAITING_FOR_RENDER":
         return {
-          stateKey: "waiting",
+          stateKey: "waiting_for_render",
           badgeText: "Loading",
           badgeClass: "warmgraph-status-building",
-          title: "Waiting for LinkedIn",
-          desc: "WarmGraph is waiting for the next part of your network to appear.",
+          title: "Waiting for LinkedIn to load more connections...",
+          desc: status.status_message || "WarmGraph is waiting for LinkedIn to render the next set of connections.",
           activities: [
             { icon: "✓", text: "Connections collected", status: "done" },
             { icon: "✓", text: "Relationship signals indexed", status: "done" },
-            { icon: "○", text: "Verifying network integrity", status: "active" }
+            { icon: "○", text: "Waiting for LinkedIn to render", status: "active" }
           ],
           showReassurance: true,
           showCta: false,
@@ -888,6 +890,14 @@
               }
             } else {
               if (typeof window !== "undefined" && window.acquisitionSession) {
+                const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+                console.log("[WG_START_CALLER]", {
+                  instanceId: instId,
+                  caller: "overlay:ctaBtn",
+                  url: typeof window !== "undefined" ? window.location.href : "",
+                  isConnectionsPage: typeof isConnectionsPage === "function" ? isConnectionsPage() : false,
+                  stack: new Error().stack
+                });
                 window.acquisitionSession.state = "acquiring";
                 window.acquisitionSession.start();
               }
@@ -1058,6 +1068,8 @@
         state === "collecting" ||
         state === "waiting" ||
         state === "waiting_for_content" ||
+        state === "waiting_for_render" ||
+        state === "WAITING_FOR_RENDER" ||
         state === "settling" ||
         state === "resumed" ||
         state === "completed" ||

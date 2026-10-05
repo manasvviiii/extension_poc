@@ -1,3 +1,14 @@
+if (typeof window !== "undefined") {
+  window.__warmgraphInstanceId ||= (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
+}
+const instanceId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+
+console.log("[WG_RUNTIME] content_loaded", {
+  instanceId,
+  url: typeof window !== "undefined" ? window.location.href : "",
+  readyState: typeof document !== "undefined" ? document.readyState : ""
+});
+
 const connectionStore = new Map();
 const relationshipEvidenceStore = new Map();
 
@@ -74,14 +85,22 @@ function slugToOwnerId(slug) {
  * local session owner ID immediately so acquisition never stalls in "Identity Pending".
  */
 async function detectAndPersistOwnerIdentity() {
+  const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+
   // Step 1: Check existing persisted owner identity
   const stored = await new Promise(r => chrome.storage.local.get(["warmgraph_owner", "ownerId", "externalProfileUrl"], r));
   const currentOwner = stored && stored.warmgraph_owner;
-  const currentId = currentOwner?.ownerId || (stored && stored.ownerId) || "";
+  const existingOwnerId = currentOwner?.ownerId || (stored && stored.ownerId) || "";
 
-  if (currentId) {
+  if (existingOwnerId) {
     // If we already have a real slug or local owner ID, preserve it
-    cachedOwnerId = currentId;
+    cachedOwnerId = existingOwnerId;
+    console.log("[WG_RUNTIME] owner_init", {
+      instanceId: instId,
+      existingOwnerId,
+      resolvedOwnerId: existingOwnerId,
+      source: currentOwner?.source || "storage"
+    });
     return cachedOwnerId;
   }
 
@@ -89,13 +108,14 @@ async function detectAndPersistOwnerIdentity() {
   const slug = detectLinkedInOwnerSlug();
   const ownerId = slug ? slugToOwnerId(slug) : `wg_owner_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   const profileUrl = slug ? `https://www.linkedin.com/in/${slug}` : null;
+  const source = slug ? "linkedin_nav" : "local_session";
 
   const ownerRecord = {
     ownerId,
     profileUrl,
     name: "",
     detectedAt: new Date().toISOString(),
-    source: slug ? "linkedin_nav" : "local_session"
+    source
   };
 
   await new Promise(r => chrome.storage.local.set({
@@ -105,6 +125,14 @@ async function detectAndPersistOwnerIdentity() {
   }, r));
 
   cachedOwnerId = ownerId;
+
+  console.log("[WG_RUNTIME] owner_init", {
+    instanceId: instId,
+    existingOwnerId: null,
+    resolvedOwnerId: ownerId,
+    source
+  });
+
   return ownerId;
 }
 
@@ -1679,6 +1707,19 @@ class ConnectionAcquisitionSession {
     }
   }
 
+  checkpointSessionAsync() {
+    this.checkpointSessionSync();
+    return new Promise((resolve) => {
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get(["warmgraph_active_graph", "currentSession"], () => {
+          resolve();
+        });
+      } else {
+        resolve();
+      }
+    });
+  }
+
   checkpointSession() {
     this.checkpointSessionSync();
     const status = this.getStatus();
@@ -2087,24 +2128,84 @@ class ConnectionAcquisitionSession {
     if (this.state !== "completed" || this.isPartial) {
       this.syncStatus = "blocked";
       this.syncMessage = "Backend sync blocked: Partial or incomplete datasets are never synced automatically.";
-      await this.checkpointSession();
+      await this.checkpointSessionAsync();
       return false;
     }
 
-    if (this.syncStatus === "synced") {
+    if (this.syncStatus === "synced" || this.autoSyncCompleted) {
       return false;
     }
 
-    if (this.syncStatus === "syncing" && !isRetry) {
+    if (this.syncInFlight && !isRetry) {
       return false;
     }
+
+    this.syncInFlight = true;
+    const ownerId = await getOwnerId();
+
+    // LOG 1: [WG_AUTO_SYNC] FINAL_STATE
+    console.log("[WG_AUTO_SYNC] FINAL_STATE", {
+      sessionId: this.sessionId,
+      ownerId,
+      totalConnections: this.totalConnections || this.expectedTotal,
+      targetProfiles: this.actualProfiles || this.expectedTotal,
+      actualProfiles: this.connections.size,
+      completionStatus: this.completionStatus || "complete",
+      verifiedExhaustion: true,
+      connectionStoreCount: typeof connectionStore !== "undefined" ? connectionStore.size : 0,
+      checkpointConnectionCount: this.connections.size
+    });
+
+    // LOG 2: [WG_AUTO_SYNC] REQUEST
+    console.log("[WG_AUTO_SYNC] REQUEST", {
+      sessionId: this.sessionId,
+      connectionCount: this.connections.size,
+      expectedTotal: this.expectedTotal || this.totalConnections,
+      completionStatus: this.completionStatus || "complete"
+    });
 
     this.syncStatus = "syncing";
     this.syncMessage = "Saving your network to WarmGraph...";
-    await this.checkpointSession();
+    await this.checkpointSessionAsync();
 
     try {
-      const ownerId = await getOwnerId();
+      let syncResult = null;
+
+      // Invoke canonical SYNC_NETWORK background path (same path as manual Sync Again)
+      if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
+        syncResult = await new Promise((resolve) => {
+          try {
+            chrome.runtime.sendMessage({ type: "SYNC_NETWORK", action: "SYNC_NETWORK" }, (res) => {
+              if (chrome.runtime.lastError) {
+                resolve({ success: false, error: chrome.runtime.lastError.message });
+              } else {
+                resolve(res || { success: true });
+              }
+            });
+          } catch (err) {
+            resolve({ success: false, error: err.message });
+          }
+        });
+      }
+
+      if (syncResult && syncResult.success) {
+        this.syncStatus = "synced";
+        this.syncMessage = "Network Successfully Synced ✓";
+        this.lastSyncTimestamp = new Date().toISOString();
+        this.lastSyncError = null;
+        this.autoSyncCompleted = true;
+        this.syncInFlight = false;
+
+        console.log("[WG_AUTO_SYNC] SUCCESS", {
+          status: 200,
+          connectionCount: this.connections.size
+        });
+
+        await this.checkpointSessionAsync();
+        return true;
+      }
+
+      // Fallback direct POST /network/import if runtime message response was empty or failed
       const payload = {
         owner_id: ownerId,
         source: "linkedin_dom",
@@ -2112,44 +2213,66 @@ class ConnectionAcquisitionSession {
         connections: Array.from(this.connections.values()),
         relationship_evidence: Array.from(this.relationshipEvidence.values()),
         page_type: getPageType(),
-        page_url: window.location.href
+        page_url: window.location.href,
+        expected_total: this.expectedTotal || this.connections.size,
+        collected_total: this.connections.size,
+        completion_status: this.completionStatus || "complete"
       };
 
       if (typeof fetch === "function") {
         const res = await fetch(`${BACKEND_BASE_URL}/network/import`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...payload,
-            expected_total: this.expectedTotal,
-            collected_total: this.connections.size,
-            completion_status: this.completionStatus || (this.state === "completed" ? "complete" : "incomplete")
-          })
+          body: JSON.stringify(payload)
         });
 
         if (res.ok) {
-          const resData = await res.json().catch(() => ({}));
           this.syncStatus = "synced";
-          this.syncMessage = "Backend sync completed successfully.";
+          this.syncMessage = "Network Successfully Synced ✓";
           this.lastSyncTimestamp = new Date().toISOString();
           this.lastSyncError = null;
-          this.syncRetryCount = 0;
-          await this.checkpointSession();
+          this.autoSyncCompleted = true;
+          this.syncInFlight = false;
+
+          console.log("[WG_AUTO_SYNC] SUCCESS", {
+            status: res.status,
+            connectionCount: this.connections.size
+          });
+
+          await this.checkpointSessionAsync();
+          return true;
         } else {
           const errData = await res.json().catch(() => ({}));
+          const errMsg = errData.detail || `Backend returned HTTP ${res.status}`;
+
           this.syncStatus = "failed";
-          this.syncMessage = errData.detail || `Backend returned HTTP ${res.status}`;
-          this.lastSyncError = errData.detail || `HTTP ${res.status}`;
-          await this.checkpointSession();
-          this.scheduleSyncRetry();
+          this.syncMessage = "Network sync failed — Sync Again to retry.";
+          this.lastSyncError = errMsg;
+          this.syncInFlight = false;
+
+          console.log("[WG_AUTO_SYNC] FAILURE", {
+            status: res.status,
+            error: errMsg
+          });
+
+          await this.checkpointSessionAsync();
+          return false;
         }
       }
     } catch (err) {
+      const errMsg = err.message || "Network error while connecting to backend.";
       this.syncStatus = "failed";
-      this.syncMessage = err.message || "Network error while connecting to backend.";
-      this.lastSyncError = err.message;
-      await this.checkpointSession();
-      this.scheduleSyncRetry();
+      this.syncMessage = "Network sync failed — Sync Again to retry.";
+      this.lastSyncError = errMsg;
+      this.syncInFlight = false;
+
+      console.log("[WG_AUTO_SYNC] FAILURE", {
+        status: 500,
+        error: errMsg
+      });
+
+      await this.checkpointSessionAsync();
+      return false;
     }
   }
 
@@ -2172,11 +2295,8 @@ class ConnectionAcquisitionSession {
 
   async finishSessionAsComplete() {
     this.state = "completed";
-    this.completionStatus = (this.expectedTotal > 0 && this.connections.size >= this.expectedTotal - 1)
-      ? "complete"
-      : "complete_rendered_dataset";
-    // Do NOT set syncStatus = "synced" here — autoSyncToBackend() guards on syncStatus
-    // and will skip execution if it sees "synced". Let autoSyncToBackend() drive sync status.
+    this.completionStatus = "complete";
+    this.verifiedExhaustion = true;
     this.isPartial = false;
     this.statusMessage = "You're all caught up ✨";
     this.nextBatchAt = null;
@@ -2184,7 +2304,11 @@ class ConnectionAcquisitionSession {
     this.countdownSeconds = 0;
     this.pausedRemainingMs = null;
     this.estimatedRemainingMs = null;
-    await this.checkpointSession();
+
+    // STEP 1 & 2: Await final checkpoint persistence so warmgraph_active_graph is written to disk BEFORE sync
+    await this.checkpointSessionAsync();
+
+    // STEP 3: Trigger automatic completion sync via canonical path
     await this.autoSyncToBackend();
   }
 
@@ -2202,13 +2326,14 @@ class ConnectionAcquisitionSession {
       if (key) this.seenProfiles.add(key);
     });
 
-    // ── SSOT: Freeze totalConnections and actualProfiles ONCE per session ────
-    if (!this.totalConnections || this.totalConnections === 0) {
-      const domTotal = extractTotalConnectionsFromDom();
-      if (domTotal && domTotal > 0) {
+    // ── SSOT: Freeze totalConnections and actualProfiles with live DOM header ────
+    const domTotal = extractTotalConnectionsFromDom();
+    if (domTotal && domTotal > 0) {
+      const liveTarget = Math.max(domTotal - 1, 0);
+      if (!this.totalConnections || this.totalConnections !== domTotal || this.actualProfiles !== liveTarget) {
         this.totalConnections = domTotal;
         this.expectedTotal = domTotal;
-        this.actualProfiles = domTotal > 1 ? domTotal - 1 : domTotal;
+        this.actualProfiles = liveTarget;
       }
     }
 
@@ -2284,22 +2409,136 @@ class ConnectionAcquisitionSession {
           break;
         }
       } else {
-        // No new profiles in this batch — assess whether we're genuinely exhausted
+        // No new profiles in this batch — assess stall reason and initiate controlled render recovery
+        const container = this.resolveScrollContainer();
+        const isDoc = (container === document.body || container === document.documentElement || container === document.scrollingElement);
+        const currentScrollTop = isDoc
+          ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
+          : (container ? container.scrollTop : 0);
+        const scrollHeight = container ? container.scrollHeight : (document.documentElement ? document.documentElement.scrollHeight : 0);
+        const clientHeight = container ? container.clientHeight : (window.innerHeight || 800);
+        const visibleKeys = Array.from(this.getVisibleProfileKeys());
+
+        let stallReason = "rendering_lag";
+        if (traversal.moved === false) {
+          stallReason = "scrolling_stuck";
+        } else if (targetCount > 0 && this.connections.size >= targetCount) {
+          stallReason = "target_reached";
+        } else if (traversal.isAtBottom && !this.findLoadMoreButton()) {
+          stallReason = "at_bottom";
+        }
+
+        console.log("[WG_RENDER_WAIT]", {
+          extracted: this.connections.size,
+          target: targetCount,
+          scrollTop: currentScrollTop,
+          scrollHeight,
+          clientHeight,
+          visibleKeys: visibleKeys.length,
+          reason: stallReason
+        });
+
+        this.state = "WAITING_FOR_RENDER";
+        this.statusMessage = "Waiting for LinkedIn to load more connections...";
+        await this.checkpointSession();
+
+        let recoveryProgressMade = false;
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          if (this.shouldCancel || !isConnectionsPage()) break;
+
+          const activeContainer = this.resolveScrollContainer();
+          const activeIsDoc = (activeContainer === document.body || activeContainer === document.documentElement || activeContainer === document.scrollingElement);
+          const prevScrollTop = activeIsDoc
+            ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
+            : (activeContainer ? activeContainer.scrollTop : 0);
+          const newKeysBefore = this.scanCurrentPageForUnseen().newProfilesCount;
+
+          // Controlled recovery per attempt:
+          // Attempt 1: Passive 1.5s wait for DOM to render existing pending cards
+          // Attempt 2: Active scroll nudge (-150px then +250px) to awaken LinkedIn's IntersectionObserver
+          // Attempt 3: Check Load More button OR sentinel scrollIntoView on last card anchor
+          if (attempt === 2) {
+            if (!activeIsDoc && activeContainer) {
+              activeContainer.scrollTop = Math.max(0, activeContainer.scrollTop - 150);
+              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
+              await new Promise(r => setTimeout(r, 200));
+              activeContainer.scrollTop = activeContainer.scrollTop + 250;
+              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
+            } else {
+              if (typeof window.scrollBy === "function") {
+                window.scrollBy({ top: -150, behavior: "instant" });
+                window.dispatchEvent(new Event("scroll", { bubbles: true }));
+                await new Promise(r => setTimeout(r, 200));
+                window.scrollBy({ top: 250, behavior: "instant" });
+                window.dispatchEvent(new Event("scroll", { bubbles: true }));
+              }
+            }
+          } else if (attempt === 3) {
+            const loadMoreBtn = this.findLoadMoreButton();
+            if (loadMoreBtn) {
+              try { loadMoreBtn.click(); } catch (_) {}
+            } else {
+              const anchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
+              if (anchors.length > 0) {
+                const lastAnchor = anchors[anchors.length - 1];
+                const sentinel = (lastAnchor.closest && lastAnchor.closest('li, .mn-connection-card, [class*="card"]')) || lastAnchor;
+                if (sentinel && typeof sentinel.scrollIntoView === "function") {
+                  try { sentinel.scrollIntoView({ block: "end", behavior: "instant" }); } catch (_) {}
+                }
+              }
+            }
+          }
+
+          const waitTime = attempt === 1 ? 1500 : 2000;
+          await new Promise(r => setTimeout(r, waitTime));
+
+          const recScan = this.scanCurrentPageForUnseen();
+          const newKeysAfter = recScan.newProfilesCount;
+          const newScrollTop = activeIsDoc
+            ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
+            : (activeContainer ? activeContainer.scrollTop : 0);
+
+          const recovered = (recScan.newProfilesCount > 0);
+
+          console.log("[WG_RENDER_RECOVERY]", {
+            attempt,
+            previousScrollTop: prevScrollTop,
+            newScrollTop,
+            newKeysBefore,
+            newKeysAfter,
+            recovered
+          });
+
+          if (recovered) {
+            recoveryProgressMade = true;
+            this.state = "acquiring";
+            this.statusMessage = "Resuming extraction...";
+            consecutiveZeroProgressCount = 0;
+            await this.checkpointSession();
+            break;
+          }
+        }
+
+        if (recoveryProgressMade) {
+          if (targetCount > 0 && this.connections.size >= targetCount) {
+            await this.finishSessionAsComplete();
+            break;
+          }
+          continue;
+        }
+
+        // Bounded recovery completed without new keys — evaluate genuine exhaustion
         const hasLoader = !!(document.querySelector && document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"]'));
         const hasLoadMore = !!this.findLoadMoreButton();
 
-        // Count zero progress when:
-        // - we're at the bottom with no loader/load-more, OR
-        // - scroll didn't actually move (wrong container or truly at max scroll)
         const scrollStuck = (traversal.method === "scroll" && traversal.moved === false);
         if ((!hasLoader && !hasLoadMore && traversal.isAtBottom) || (scrollStuck && !hasLoader && !hasLoadMore)) {
           consecutiveZeroProgressCount++;
         } else if (hasLoader) {
-          // Something is loading — give it more time, don't count as zero progress
           consecutiveZeroProgressCount = Math.max(0, consecutiveZeroProgressCount - 1);
         }
 
-        // List reached bottom and confirmed exhausted over multiple attempts
         if (consecutiveZeroProgressCount >= MAX_ZERO_PROGRESS) {
           await this.finishSessionAsComplete();
           break;
@@ -2439,6 +2678,15 @@ class ConnectionAcquisitionSession {
       this.checkpointSessionSync();
       return this.getStatus();
     }
+
+    const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+    console.log("[WG_RUNTIME] acquisition_start", {
+      instanceId: instId,
+      ownerId: cachedOwnerId,
+      sessionId: this.sessionId,
+      state: stateName
+    });
+
     if ((typeof window !== "undefined" && window.__warmgraphAcquisitionRunning) || this.isRunning || this.activeLoopPromise) {
       return this.getStatus();
     }
@@ -2730,8 +2978,17 @@ if (typeof window !== "undefined") {
 
 let isEnsuringAcquisition = false;
 async function ensureConnectionsAcquisition() {
+  const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+  const isConn = isConnectionsPage();
+
+  console.log("[WG_RUNTIME] route_detected", {
+    instanceId: instId,
+    url: typeof window !== "undefined" ? window.location.href : "",
+    isConnectionsPage: isConn
+  });
+
   if (isEnsuringAcquisition) return;
-  if (!isConnectionsPage()) {
+  if (!isConn) {
     if (
       acquisitionSession &&
       (acquisitionSession.isRunning ||
@@ -2752,25 +3009,87 @@ async function ensureConnectionsAcquisition() {
   isEnsuringAcquisition = true;
   try {
     // 1. Establish owner identity immediately
-    await detectAndPersistOwnerIdentity();
+    const ownerId = await detectAndPersistOwnerIdentity();
 
     // 2. Hydrate session from storage
     await acquisitionSession.initOrHydrateSession();
 
-    // 3. Make sure overlay is visible
-    acquisitionSession.checkpointSessionSync();
+    // 3. Reconcile restored session against live LinkedIn DOM header
+    const linkedinDisplayedTotal = extractTotalConnectionsFromDom();
+    const restoredTargetProfiles = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
+    const restoredConnectionCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
+    const restoredCompletionStatus = acquisitionSession.completionStatus || "incomplete";
+    const restoredAutoSyncCompleted = !!acquisitionSession.autoSyncCompleted;
 
-    // 4. Check if session was already completed
+    let liveTargetProfiles = restoredTargetProfiles;
+    let action = "PRESERVE_VALID_TARGET";
+
+    if (linkedinDisplayedTotal && linkedinDisplayedTotal > 0) {
+      liveTargetProfiles = Math.max(linkedinDisplayedTotal - 1, 0);
+
+      if (restoredTargetProfiles > 0 && restoredTargetProfiles !== liveTargetProfiles) {
+        action = "INVALIDATE_STALE_TARGET";
+        acquisitionSession.totalConnections = linkedinDisplayedTotal;
+        acquisitionSession.expectedTotal = linkedinDisplayedTotal;
+        acquisitionSession.actualProfiles = liveTargetProfiles;
+        acquisitionSession.completionStatus = "incomplete";
+        acquisitionSession.autoSyncCompleted = false;
+        acquisitionSession.syncInFlight = false;
+        acquisitionSession.syncStatus = "idle";
+        acquisitionSession.syncMessage = "";
+        if (acquisitionSession.state === "completed" || acquisitionSession.state === "resting") {
+          acquisitionSession.state = "acquiring";
+          acquisitionSession.statusMessage = "Mapping your network...";
+        }
+      } else if (restoredTargetProfiles === 0) {
+        action = "SET_NEW_TARGET";
+        acquisitionSession.totalConnections = linkedinDisplayedTotal;
+        acquisitionSession.expectedTotal = linkedinDisplayedTotal;
+        acquisitionSession.actualProfiles = liveTargetProfiles;
+      }
+    }
+
+    console.log("[WG_TARGET]", {
+      linkedinDisplayedTotal: linkedinDisplayedTotal || "not_found_yet",
+      targetProfiles: liveTargetProfiles,
+      restoredTargetProfiles,
+      restoredConnectionCount,
+      restoredCompletionStatus,
+      restoredAutoSyncCompleted,
+      action
+    });
+
+    // 4. Immediately create & render overlay with reconciled state (actual/target mapped) BEFORE extraction loop starts
+    acquisitionSession.checkpointSessionSync();
+    if (typeof window !== "undefined" && typeof window.updateWarmGraphOverlay === "function") {
+      window.updateWarmGraphOverlay(acquisitionSession.getStatus());
+    }
+
+    console.log("[WG_RUNTIME] connections_detected", {
+      instanceId: instId,
+      ownerReady: !!ownerId,
+      sessionState: acquisitionSession.state,
+      isRunning: acquisitionSession.isRunning || !!window.__warmgraphAcquisitionRunning
+    });
+
+    // 5. Check if session is genuinely completed for the reconciled target
     const extractedCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
-    const targetCount = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
+    const targetCount = acquisitionSession.actualProfiles || liveTargetProfiles;
     if (targetCount > 0 && extractedCount >= targetCount && acquisitionSession.completionStatus === "complete") {
       acquisitionSession.state = "completed";
       acquisitionSession.checkpointSessionSync();
       return;
     }
 
-    // 5. Start acquisition if not already running
+    // 6. Start acquisition if not already running
     if (!acquisitionSession.isRunning && !window.__warmgraphAcquisitionRunning) {
+      console.log("[WG_START_CALLER]", {
+        instanceId: instId,
+        caller: "ensureConnectionsAcquisition",
+        url: typeof window !== "undefined" ? window.location.href : "",
+        isConnectionsPage: isConnectionsPage(),
+        stack: new Error().stack
+      });
       acquisitionSession.start();
     }
   } finally {
@@ -2782,6 +3101,17 @@ let routeDebounceTimer = null;
 function handleRouteChange() {
   if (routeDebounceTimer) clearTimeout(routeDebounceTimer);
   routeDebounceTimer = setTimeout(() => {
+    const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+    const isConn = isConnectionsPage();
+    console.log("[WG_ROUTE_DECISION]", {
+      instanceId: instId,
+      url: typeof window !== "undefined" ? window.location.href : "",
+      pathname: typeof window !== "undefined" ? window.location.pathname : "",
+      isConnectionsPage: isConn,
+      ownerReady: !!cachedOwnerId,
+      acquisitionRunning: !!((typeof window !== "undefined" && window.__warmgraphAcquisitionRunning) || (acquisitionSession && acquisitionSession.isRunning)),
+      sessionState: acquisitionSession ? acquisitionSession.state : "none"
+    });
     ensureConnectionsAcquisition();
   }, 250);
 }
@@ -2849,6 +3179,14 @@ if (typeof window !== "undefined") {
             const targetCount = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
             if (targetCount === 0 || extractedCount < targetCount) {
               if (!window.__warmgraphAcquisitionRunning) {
+                const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+                console.log("[WG_START_CALLER]", {
+                  instanceId: instId,
+                  caller: "visibilitychange",
+                  url: typeof window !== "undefined" ? window.location.href : "",
+                  isConnectionsPage: isConnectionsPage(),
+                  stack: new Error().stack
+                });
                 acquisitionSession.start();
               } else if (acquisitionSession.nextBatchAt && Date.now() >= acquisitionSession.nextBatchAt) {
                 if (acquisitionSession.nextBatchResolver) {
@@ -2906,6 +3244,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           (async () => {
             const rec = await acquisitionSession.reconcileNetworkWithDom(true);
             if (rec.action !== "skip") {
+              const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+              console.log("[WG_START_CALLER]", {
+                instanceId: instId,
+                caller: "onMessage:SYNC_AGAIN",
+                url: typeof window !== "undefined" ? window.location.href : "",
+                isConnectionsPage: isConnectionsPage(),
+                stack: new Error().stack
+              });
               acquisitionSession.start();
             }
           })();
@@ -2927,6 +3273,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const extractedCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
             const targetCount = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
             if (targetCount === 0 || extractedCount < targetCount) {
+              const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+              console.log("[WG_START_CALLER]", {
+                instanceId: instId,
+                caller: "onMessage:RUN_NEXT_BATCH",
+                url: typeof window !== "undefined" ? window.location.href : "",
+                isConnectionsPage: isConnectionsPage(),
+                stack: new Error().stack
+              });
               acquisitionSession.start();
             }
           }
@@ -2939,6 +3293,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (acquisitionSession.state === "acquiring") {
           status = acquisitionSession.getStatus();
         } else {
+          const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
+          console.log("[WG_START_CALLER]", {
+            instanceId: instId,
+            caller: "onMessage:startAutomatedAcquisition",
+            url: typeof window !== "undefined" ? window.location.href : "",
+            isConnectionsPage: isConnectionsPage(),
+            stack: new Error().stack
+          });
           status = acquisitionSession.start();
         }
         sendResponse({

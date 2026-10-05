@@ -803,7 +803,7 @@ function updateAcquisitionDashboard(status) {
   if (syncBadgeEl) {
     if (syncState === "synced") {
       syncBadgeEl.style.display = "inline";
-      syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">✓ ${collected} connections synced</span>`;
+      syncBadgeEl.innerHTML = `<span style="color:#2e7d32; font-weight:700;">✓ ${extracted} connections synced</span>`;
     } else {
       syncBadgeEl.style.display = "none";
     }

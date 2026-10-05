@@ -272,7 +272,9 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
             if (!currentTab.url || !currentTab.url.includes("/mynetwork/invite-connect/connections/")) {
               chrome.tabs.update(currentTab.id, { url: targetUrl });
             } else {
-              chrome.tabs.sendMessage(currentTab.id, { action: "SYNC_AGAIN" }, () => {});
+              chrome.tabs.sendMessage(currentTab.id, { action: "SYNC_AGAIN" }, () => {
+                if (chrome.runtime.lastError) {}
+              });
             }
           } else {
             chrome.tabs.create({ url: targetUrl });
@@ -327,7 +329,9 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
               if (!currentTab.url || !currentTab.url.includes("/mynetwork/invite-connect/connections/")) {
                 chrome.tabs.update(currentTab.id, { url: targetUrl });
               } else {
-                chrome.tabs.sendMessage(currentTab.id, { action: "startAutomatedAcquisition" }, () => {});
+                chrome.tabs.sendMessage(currentTab.id, { action: "startAutomatedAcquisition" }, () => {
+                  if (chrome.runtime.lastError) {}
+                });
               }
             } else {
               chrome.tabs.create({ url: targetUrl });
@@ -707,7 +711,9 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
                 // 6. Broadcast SYNC_COMPLETE
                 if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
                   try {
-                    chrome.runtime.sendMessage({ action: "SYNC_COMPLETE", type: "SYNC_COMPLETE", ownerId: ownerIdVal });
+                    chrome.runtime.sendMessage({ action: "SYNC_COMPLETE", type: "SYNC_COMPLETE", ownerId: ownerIdVal }, () => {
+                      if (chrome.runtime.lastError) {}
+                    });
                   } catch (_) {}
                 }
 
