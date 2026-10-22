@@ -460,7 +460,13 @@ function getHumanizedStateInfo(status) {
   const syncStatus = status.sync_status || status.syncStatus || "idle";
   const collected = status.collected_count !== undefined ? status.collected_count : (status.connections ? status.connections.length : 0);
   const expected = status.expected_total || status.reliable_dom_total || 0;
-  const countdown = status.countdown_seconds || status.countdownSeconds || 0;
+  const isStalled = Boolean(status.isStalled || status.is_stalled || state === "stalled");
+  const isRetrying = Boolean(status.isRetrying || status.is_retrying || state === "retrying");
+  const nextBatchAt = status.nextBatchAt || (status.nextSyncAt ? new Date(status.nextSyncAt).getTime() : null);
+  const liveCountdown = (nextBatchAt && nextBatchAt > Date.now())
+    ? Math.ceil((nextBatchAt - Date.now()) / 1000)
+    : (status.countdown_seconds || status.countdownSeconds || 0);
+  const countdown = liveCountdown;
   const isError = state === "failed" || state === "error" || (status.error && status.error.length > 0);
 
   if (isError) {
@@ -507,7 +513,49 @@ function getHumanizedStateInfo(status) {
     };
   }
 
+  if (isStalled && !["completed", "resting"].includes(state)) {
+    return {
+      title: "Acquisition Stalled",
+      badgeText: "⚠️ Stalled",
+      subtext: status.status_message || "LinkedIn connection list stopped responding. Return to tab or scroll to resume.",
+      isComplete: false,
+      isSyncing: false,
+      isSyncFailed: false
+    };
+  }
+
+  if (isRetrying && !["completed", "resting"].includes(state)) {
+    return {
+      title: "Recovering connections...",
+      badgeText: "🔄 Retrying",
+      subtext: status.status_message || "Attempting to reload more connections from LinkedIn.",
+      isComplete: false,
+      isSyncing: false,
+      isSyncFailed: false
+    };
+  }
+
   switch (state) {
+    case "stalled":
+      return {
+        title: "Acquisition Stalled",
+        badgeText: "⚠️ Stalled",
+        subtext: status.status_message || "LinkedIn connection list stopped responding. Return to tab or scroll to resume.",
+        isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+
+    case "retrying":
+      return {
+        title: "Recovering connections...",
+        badgeText: "🔄 Retrying",
+        subtext: status.status_message || "Attempting to reload more connections from LinkedIn.",
+        isComplete: false,
+        isSyncing: false,
+        isSyncFailed: false
+      };
+
     case "preparing":
       return {
         title: "Reading your network",
@@ -533,7 +581,7 @@ function getHumanizedStateInfo(status) {
     case "waiting":
     case "waiting_for_content":
       return {
-        title: countdown > 0 ? `Next batch in ${countdown}s` : "Preparing next batch...",
+        title: (countdown > 0 && nextBatchAt && nextBatchAt > Date.now()) ? `Next batch in ${countdown}s` : "Loading next batch...",
         badgeText: "⏳ Batch Countdown",
         subtext: "You can continue browsing LinkedIn normally.",
         isComplete: false,
@@ -610,11 +658,13 @@ function updateAcquisitionDashboard(status) {
     : (status.collected_count !== undefined ? status.collected_count : 0);
 
   // Trust actualProfiles from content.js — NEVER re-derive from extracted
-  const actual = status.actualProfiles !== undefined && status.actualProfiles > 0
+  const actual = (status.actualProfiles !== undefined && status.actualProfiles !== null && status.actualProfiles > 0)
     ? status.actualProfiles
-    : (status.totalConnections || status.expected_total || 0);
+    : (status.totalConnections > 1 ? status.totalConnections - 1 : (status.expected_total > 1 ? status.expected_total - 1 : 0));
 
-  const total = status.totalConnections !== undefined ? status.totalConnections : (status.expected_total || actual);
+  const total = status.totalConnections !== undefined && status.totalConnections > 0
+    ? status.totalConnections
+    : (status.expected_total > 0 ? status.expected_total : (actual > 0 ? actual + 1 : 0));
 
   // Trust state directly from content.js — do NOT re-map completed→resting here
   const state = rawState;
@@ -635,7 +685,14 @@ function updateAcquisitionDashboard(status) {
     progressPercent: progressPercent,
     syncStatus: syncState,
     lastSyncDate: lastSyncDate,
-    state: state
+    state: state,
+    status_message: status.status_message || status.statusMessage || "",
+    isStalled: Boolean(status.isStalled || status.is_stalled || state === "stalled"),
+    isRetrying: Boolean(status.isRetrying || status.is_retrying || state === "retrying"),
+    nextBatchAt: status.nextBatchAt || null,
+    nextSyncAt: status.nextSyncAt || null,
+    countdown_seconds: countdown,
+    countdownSeconds: countdown
   };
 
   const heroDisplayEl = document.getElementById("heroCountDisplay");
@@ -705,8 +762,10 @@ function updateAcquisitionDashboard(status) {
 
   // Batch Countdown display (PART 3)
   if (countdownTextEl) {
-    if ((state === "waiting" || countdown > 0) && state !== "paused" && state !== "interrupted") {
-      countdownTextEl.textContent = `Next batch in ${countdown}s`;
+    const nextBatchAt = status.nextBatchAt || (status.nextSyncAt ? new Date(status.nextSyncAt).getTime() : null);
+    const liveCountdown = (nextBatchAt && nextBatchAt > Date.now()) ? Math.ceil((nextBatchAt - Date.now()) / 1000) : 0;
+    if ((state === "waiting" || liveCountdown > 0) && state !== "paused" && state !== "interrupted" && !currentSession.isStalled && liveCountdown > 0) {
+      countdownTextEl.textContent = `Next batch in ${liveCountdown}s`;
       countdownTextEl.style.display = "block";
     } else {
       countdownTextEl.style.display = "none";
@@ -938,8 +997,9 @@ function fetchAcquisitionStatus() {
           if (!localSession) localSession = {};
           localSession = {
             ...localSession,
-            extractedConnections: currentSession.extractedConnections !== undefined ? currentSession.extractedConnections : (localSession.extractedConnections || currentSession.actualProfiles || 0),
-            collected_count: currentSession.actualProfiles !== undefined ? currentSession.actualProfiles : (localSession.collected_count || currentSession.extractedConnections || 0),
+            extractedConnections: currentSession.extractedConnections !== undefined ? currentSession.extractedConnections : (localSession.extractedConnections || 0),
+            collected_count: currentSession.extractedConnections !== undefined ? currentSession.extractedConnections : (localSession.collected_count || localSession.extractedConnections || 0),
+            actualProfiles: currentSession.actualProfiles !== undefined ? currentSession.actualProfiles : localSession.actualProfiles,
             totalConnections: currentSession.totalConnections !== undefined ? currentSession.totalConnections : localSession.totalConnections,
             expected_total: currentSession.totalConnections !== undefined ? currentSession.totalConnections : localSession.expected_total,
             lastSyncDate: currentSession.lastSyncDate || localSession.lastSyncDate || "Today"

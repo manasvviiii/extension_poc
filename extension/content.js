@@ -1500,24 +1500,6 @@ function inspectBottomTelemetry(container, loader, preCardCount, postCardCount, 
 }
 
 
-function mergeRecord(existing = {}, fresh = {}) {
-  const merged = { ...existing, ...fresh };
-  for (const k in existing) {
-    if (existing[k] && !fresh[k]) {
-      merged[k] = existing[k];
-    }
-  }
-
-  const companyRes = resolveCompanyAndRoleType(null, merged.visible_text || "", merged.headline || "", merged);
-  if (companyRes.company) {
-    merged.company = companyRes.company;
-  }
-  if (companyRes.role_type && !merged.role_type) {
-    merged.role_type = companyRes.role_type;
-  }
-
-  return merged;
-}
 
 const ACQUISITION_MIN_DELAY_MS = 7000;
 const ACQUISITION_MAX_DELAY_MS = 10000;
@@ -1576,7 +1558,22 @@ class ConnectionAcquisitionSession {
     this.activeLoopPromise = null;
     this.shouldCancel = false;
     this.isTabHidden = false;
+    this.lastProgressAt = Date.now();
+    this.isStalled = false;
+    this.visibilityResumeTimer = null;
   }
+
+  getTargetProfiles() {
+    if (this.actualProfiles !== undefined && this.actualProfiles !== null && this.actualProfiles > 0) {
+      return this.actualProfiles;
+    }
+    const raw = this.totalConnections || this.expectedTotal || 0;
+    if (raw > 1) {
+      return raw - 1;
+    }
+    return 0; // Target is unknown; preserve unknown rather than inventing a target
+  }
+
 
   setPhase(phaseName, legacyState = null, statusMsg = null) {
     this.phase = phaseName;
@@ -1599,7 +1596,8 @@ class ConnectionAcquisitionSession {
     if (phaseName === "CONNECTION_ACQUISITION_COMPLETE" || phaseName === "READY_FOR_TARGETED_PROFILES") {
       this.connectionAcquisitionComplete = true;
     } else if (phaseName === "ACQUIRING_CONNECTIONS" || phaseName === "INITIALIZING") {
-      if (this.connections && this.connections.size < (this.actualProfiles || this.expectedTotal || 0)) {
+      const target = this.getTargetProfiles();
+      if (this.connections && target > 0 && this.connections.size < target) {
         this.connectionAcquisitionComplete = false;
       }
     }
@@ -1607,7 +1605,7 @@ class ConnectionAcquisitionSession {
     console.log("[WG_ACQ_STATE]", {
       phase: this.phase,
       actualProfiles: this.connections ? this.connections.size : 0,
-      targetProfiles: this.actualProfiles || this.expectedTotal || 0,
+      targetProfiles: this.getTargetProfiles(),
       paused: this.phase === "PAUSED" || this.state === "paused",
       loopId: this.sessionId
     });
@@ -1615,7 +1613,7 @@ class ConnectionAcquisitionSession {
 
   canStartTargetedProfiles() {
     const actualCount = this.connections ? this.connections.size : 0;
-    const targetCount = this.actualProfiles || this.expectedTotal || 0;
+    const targetCount = this.getTargetProfiles();
     const isAcqComplete = this.connectionAcquisitionComplete === true ||
                           this.phase === "CONNECTION_ACQUISITION_COMPLETE" ||
                           this.phase === "READY_FOR_TARGETED_PROFILES" ||
@@ -1651,9 +1649,7 @@ class ConnectionAcquisitionSession {
     const canonicalTotal = this.totalConnections || status.totalConnections || status.expected_total || 0;
     let rawExtracted = this.connections ? this.connections.size : (status.extractedConnections || status.collected_count || 0);
 
-    const targetProfiles = (this.actualProfiles && this.actualProfiles > 0)
-      ? this.actualProfiles
-      : (this.expectedTotal && this.expectedTotal > 0 ? this.expectedTotal : (canonicalTotal > 0 ? canonicalTotal : rawExtracted));
+    const targetProfiles = this.getTargetProfiles();
 
     const canonicalActual = targetProfiles;
     const isTargetReached = canonicalActual > 0 && rawExtracted >= canonicalActual;
@@ -1798,10 +1794,23 @@ class ConnectionAcquisitionSession {
     }
   }
 
-  checkpointSessionAsync() {
+  checkpointSessionAsync(timeoutMs = 5000) {
     return new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          console.warn(`[WG_CHECKPOINT] Checkpoint timed out after ${timeoutMs}ms, proceeding safely.`);
+          resolve(false);
+        }
+      }, timeoutMs);
+
       this.checkpointSessionSync(() => {
-        resolve();
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(true);
+        }
       });
     });
   }
@@ -1860,10 +1869,10 @@ class ConnectionAcquisitionSession {
           if (canonical && canonical.totalConnections) {
             this.totalConnections = canonical.totalConnections;
             this.expectedTotal = canonical.totalConnections;
-            // Prefer the stored actualProfiles (frozen -1 offset); fall back to totalConnections
+            // Prefer the stored actualProfiles (frozen -1 offset); fall back to totalConnections - 1
             this.actualProfiles = (canonical.actualProfiles && canonical.actualProfiles > 0)
               ? canonical.actualProfiles
-              : canonical.totalConnections;
+              : (canonical.totalConnections > 1 ? canonical.totalConnections - 1 : 0);
           } else if (session) {
             const t = session.totalConnections || session.expectedTotal || 0;
             if (t > 0) {
@@ -1871,7 +1880,7 @@ class ConnectionAcquisitionSession {
               this.expectedTotal = t;
               this.actualProfiles = (session.actualProfiles && session.actualProfiles > 0)
                 ? session.actualProfiles
-                : t;
+                : (t > 1 ? t - 1 : 0);
             }
           }
           // ───────────────────────────────────────────────────────────────────
@@ -2037,6 +2046,8 @@ class ConnectionAcquisitionSession {
           this.connections.set(key, firstDegree);
           connectionStore.set(key, firstDegree);
           newProfilesCount++;
+          this.lastProgressAt = Date.now();
+          this.isStalled = false;
         }
         continue;
       }
@@ -2055,6 +2066,8 @@ class ConnectionAcquisitionSession {
           this.relationshipEvidence.set(key, evidence);
           relationshipEvidenceStore.set(key, evidence);
           newProfilesCount++;
+          this.lastProgressAt = Date.now();
+          this.isStalled = false;
         }
       } else {
         rejectionReasons.not_first_degree++;
@@ -2324,8 +2337,16 @@ class ConnectionAcquisitionSession {
 
       if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
         syncResult = await new Promise((resolve) => {
+          let timer = setTimeout(() => {
+            timer = null;
+            resolve({ success: false, error: "Runtime sendMessage timed out after 10000ms." });
+          }, 10000);
+
           try {
             chrome.runtime.sendMessage(syncPayload, (res) => {
+              if (!timer) return;
+              clearTimeout(timer);
+              timer = null;
               if (chrome.runtime.lastError) {
                 resolve({ success: false, error: chrome.runtime.lastError.message });
               } else {
@@ -2333,6 +2354,10 @@ class ConnectionAcquisitionSession {
               }
             });
           } catch (err) {
+            if (timer) {
+              clearTimeout(timer);
+              timer = null;
+            }
             resolve({ success: false, error: err.message });
           }
         });
@@ -2374,11 +2399,22 @@ class ConnectionAcquisitionSession {
       };
 
       if (typeof fetch === "function") {
-        const res = await fetch(`${BACKEND_BASE_URL}/network/import`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
+        const controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+        const fetchTimeout = controller ? setTimeout(() => {
+          try { controller.abort(); } catch (_) {}
+        }, 15000) : null;
+
+        let res;
+        try {
+          res = await fetch(`${BACKEND_BASE_URL}/network/import`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: controller ? controller.signal : undefined
+          });
+        } finally {
+          if (fetchTimeout) clearTimeout(fetchTimeout);
+        }
 
         if (res.ok) {
           this.syncStatus = "synced";
@@ -2475,7 +2511,7 @@ class ConnectionAcquisitionSession {
       sessionId: this.sessionId,
       ownerId: cachedOwnerId,
       totalConnections: this.totalConnections || this.expectedTotal,
-      targetProfiles: this.actualProfiles || this.expectedTotal,
+      targetProfiles: this.getTargetProfiles(),
       actualProfiles: this.connections.size,
       phase: this.phase,
       completionStatus: this.completionStatus || "complete",
@@ -2501,308 +2537,338 @@ class ConnectionAcquisitionSession {
     this.isRunning = true;
     this.pageCount = 0;
     this.shouldCancel = false;
+    this.isStalled = false;
+    this.lastProgressAt = Date.now();
 
-    this.setPhase("CONNECTIONS_PAGE_DETECTED", "preparing", "Connections page detected");
-    this.setPhase("INITIALIZING", "preparing", "Initializing owner and acquisition session...");
+    try {
+      this.setPhase("CONNECTIONS_PAGE_DETECTED", "preparing", "Connections page detected");
+      this.setPhase("INITIALIZING", "preparing", "Initializing owner and acquisition session...");
 
-    if (!this.seenProfiles) this.seenProfiles = new Set();
-    this.connections.forEach((c) => {
-      const key = this.getDeduplicationKey(c);
-      if (key) this.seenProfiles.add(key);
-    });
-
-    // ── SSOT: Freeze totalConnections and actualProfiles with live DOM header ────
-    const domTotal = extractTotalConnectionsFromDom();
-    if (domTotal && domTotal > 0) {
-      const liveTarget = Math.max(domTotal - 1, 0);
-      if (!this.totalConnections || this.totalConnections !== domTotal || this.actualProfiles !== liveTarget) {
-        this.totalConnections = domTotal;
-        this.expectedTotal = domTotal;
-        this.actualProfiles = liveTarget;
-      }
-    }
-
-    // Fresh acquisition positioning: position at top if starting from zero
-    if (this.connections.size === 0) {
-      const initContainer = this.resolveScrollContainer();
-      const isDoc = (initContainer === document.body || initContainer === document.documentElement || initContainer === document.scrollingElement);
-      if (!isDoc && initContainer) {
-        initContainer.scrollTop = 0;
-      }
-      if (typeof window.scrollTo === "function") {
-        window.scrollTo({ top: 0, behavior: "instant" });
-      }
-      await new Promise(r => setTimeout(r, 200));
-    }
-
-    // Step 1: Initial extraction of cards visible in initial view
-    this.setPhase("ACQUIRING_CONNECTIONS", "acquiring", "Mapping your network...");
-    const initialScan = this.scanCurrentPageForUnseen();
-    if (initialScan.newProfilesCount > 0) {
-      await this.checkpointSession();
-    }
-
-    let consecutiveZeroProgressCount = 0;
-    const MAX_ZERO_PROGRESS = 4;
-
-    while (!this.shouldCancel) {
-      // 1. Guard route: must remain on approved connections page
-      if (!isConnectionsPage()) {
-        this.setPhase("PAUSED", "paused", "Return to Connections to continue syncing.");
-        if (this.nextBatchAt && this.nextBatchAt > Date.now()) {
-          this.pausedRemainingMs = this.nextBatchAt - Date.now();
-        }
-        await this.checkpointSession();
-        break;
-      }
-
-      // 2. Check if target reached
-      const currentCount = this.connections.size;
-      const targetCount = this.actualProfiles || this.expectedTotal || 0;
-      if (targetCount > 0 && currentCount >= targetCount) {
-        await this.finishSessionAsComplete();
-        break;
-      }
-
-      this.pageCount++;
-
-      // 3. Before traversal: capture visible profile keys and container state
-      const keysBefore = this.getVisibleProfileKeys();
-      const container = this.resolveScrollContainer();
-
-      // 4. Perform traversal (scroll or Load More click)
-      this.setPhase("ACQUIRING_CONNECTIONS", "waiting", "Loading connections...");
-      const traversal = await this.performTraversalStep(container);
-
-      // 5. Pacing delay: allow LinkedIn enough time to render
-      // Human-paced ~7-10s interval (or TEST_ACQUISITION_DELAY_MS in automated tests)
-      const delayMs = getRandomAcquisitionDelayMs();
-      const delaySec = Math.round(delayMs / 1000);
-      this.nextSyncDelay = delayMs;
-      this.nextBatchAt = Date.now() + delayMs;
-      this.nextSyncAt = new Date(this.nextBatchAt).toISOString();
-      this.statusMessage = `Next batch in ${delaySec}s`;
-      await this.checkpointSession();
-
-      await this.waitForNextBatch(this.nextBatchAt);
-
-      if (this.shouldCancel) break;
-
-      // 6. After traversal: extract all newly exposed cards
-      this.setPhase("ACQUIRING_CONNECTIONS", "acquiring", "Mapping your network...");
-      const scanRes = this.scanCurrentPageForUnseen();
-
-      const isDoc = (container === document.body || container === document.documentElement || container === document.scrollingElement);
-      const currentScrollTop = isDoc
-        ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
-        : (container ? container.scrollTop : 0);
-      const scrollHeight = container ? container.scrollHeight : (document.documentElement ? document.documentElement.scrollHeight : 0);
-
-      console.log("[WG_ACQ_PROGRESS]", {
-        actualProfiles: this.connections.size,
-        targetProfiles: targetCount,
-        newKeys: scanRes.newProfilesCount,
-        scrollTop: Math.round(currentScrollTop),
-        scrollHeight: Math.round(scrollHeight)
+      if (!this.seenProfiles) this.seenProfiles = new Set();
+      this.connections.forEach((c) => {
+        const key = this.getDeduplicationKey(c);
+        if (key) this.seenProfiles.add(key);
       });
 
-      // 7. Check for new profile keys
-      if (scanRes.newProfilesCount > 0) {
-        consecutiveZeroProgressCount = 0;
-        await this.checkpointSession();
+      // ── SSOT: Freeze totalConnections and actualProfiles with live DOM header ────
+      const domTotal = extractTotalConnectionsFromDom();
+      if (domTotal && domTotal > 0) {
+        const liveTarget = Math.max(domTotal - 1, 0);
+        if (!this.totalConnections || this.totalConnections !== domTotal || this.actualProfiles !== liveTarget) {
+          this.totalConnections = domTotal;
+          this.expectedTotal = domTotal;
+          this.actualProfiles = liveTarget;
+        }
+      }
 
-        // Check if target reached
-        if (targetCount > 0 && this.connections.size >= targetCount) {
+      // Fresh acquisition positioning: position at top if starting from zero
+      if (this.connections.size === 0) {
+        const initContainer = this.resolveScrollContainer();
+        const isDoc = (initContainer === document.body || initContainer === document.documentElement || initContainer === document.scrollingElement);
+        if (!isDoc && initContainer) {
+          initContainer.scrollTop = 0;
+        }
+        if (typeof window.scrollTo === "function") {
+          window.scrollTo({ top: 0, behavior: "instant" });
+        }
+        await new Promise(r => setTimeout(r, 200));
+      }
+
+      // Step 1: Initial extraction of cards visible in initial view
+      this.setPhase("ACQUIRING_CONNECTIONS", "acquiring", "Mapping your network...");
+      const initialScan = this.scanCurrentPageForUnseen();
+      if (initialScan.newProfilesCount > 0) {
+        this.lastProgressAt = Date.now();
+        this.isStalled = false;
+        await this.checkpointSession();
+      }
+
+      let consecutiveZeroProgressCount = 0;
+      const MAX_ZERO_PROGRESS = 4;
+
+      while (!this.shouldCancel) {
+        // 1. Guard route: must remain on approved connections page
+        if (!isConnectionsPage()) {
+          this.setPhase("PAUSED", "paused", "Return to Connections to continue syncing.");
+          if (this.nextBatchAt && this.nextBatchAt > Date.now()) {
+            this.pausedRemainingMs = this.nextBatchAt - Date.now();
+          }
+          await this.checkpointSession();
+          break;
+        }
+
+        // 2. Check if target reached
+        const currentCount = this.connections.size;
+        const targetCount = this.getTargetProfiles();
+        if (targetCount > 0 && currentCount >= targetCount) {
           await this.finishSessionAsComplete();
           break;
         }
-      } else {
-        // No new profiles in this batch — assess stall reason and initiate controlled render recovery
-        const clientHeight = container ? container.clientHeight : (window.innerHeight || 800);
-        const visibleKeys = Array.from(this.getVisibleProfileKeys());
 
-        let stallReason = "rendering_lag";
-        if (traversal.moved === false) {
-          stallReason = "scrolling_stuck";
-        } else if (targetCount > 0 && this.connections.size >= targetCount) {
-          stallReason = "target_reached";
-        } else if (traversal.isAtBottom && !this.findLoadMoreButton()) {
-          stallReason = "at_bottom";
-        }
+        this.pageCount++;
 
-        console.log("[WG_RENDER_WAIT]", {
-          extracted: this.connections.size,
-          target: targetCount,
-          scrollTop: currentScrollTop,
-          scrollHeight,
-          clientHeight,
-          visibleKeys: visibleKeys.length,
-          reason: stallReason
-        });
+        // 3. Before traversal: capture visible profile keys and container state
+        const keysBefore = this.getVisibleProfileKeys();
+        const container = this.resolveScrollContainer();
 
-        this.setPhase("WAITING_FOR_LINKEDIN_RENDER", "waiting_for_render", "Waiting for LinkedIn to load more connections...");
+        // 4. Perform traversal (scroll or Load More click)
+        this.setPhase("ACQUIRING_CONNECTIONS", "waiting", "Loading connections...");
+        const traversal = await this.performTraversalStep(container);
+
+        // 5. Pacing delay: allow LinkedIn enough time to render
+        // Human-paced ~7-10s interval (or TEST_ACQUISITION_DELAY_MS in automated tests)
+        const delayMs = getRandomAcquisitionDelayMs();
+        const delaySec = Math.round(delayMs / 1000);
+        this.nextSyncDelay = delayMs;
+        this.nextBatchAt = Date.now() + delayMs;
+        this.nextSyncAt = new Date(this.nextBatchAt).toISOString();
+        this.statusMessage = `Next batch in ${delaySec}s`;
         await this.checkpointSession();
 
-        let recoveryProgressMade = false;
+        await this.waitForNextBatch(this.nextBatchAt);
 
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          if (this.shouldCancel || !isConnectionsPage()) break;
+        if (this.shouldCancel) break;
 
-          this.setPhase("RECOVERING_RENDER", "waiting_for_render", `Recovering LinkedIn list rendering (attempt ${attempt})...`);
+        // 6. After traversal: extract all newly exposed cards
+        this.setPhase("ACQUIRING_CONNECTIONS", "acquiring", "Mapping your network...");
+        const scanRes = this.scanCurrentPageForUnseen();
 
-          const activeContainer = this.resolveScrollContainer();
-          const activeIsDoc = (activeContainer === document.body || activeContainer === document.documentElement || activeContainer === document.scrollingElement);
-          const prevScrollTop = activeIsDoc
-            ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
-            : (activeContainer ? activeContainer.scrollTop : 0);
-          const newKeysBefore = this.scanCurrentPageForUnseen().newProfilesCount;
+        const isDoc = (container === document.body || container === document.documentElement || container === document.scrollingElement);
+        const currentScrollTop = isDoc
+          ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
+          : (container ? container.scrollTop : 0);
+        const scrollHeight = container ? container.scrollHeight : (document.documentElement ? document.documentElement.scrollHeight : 0);
 
-          // Controlled recovery per attempt:
-          // Attempt 1: Scroll nudge (-250px then +400px into loader/sentinel) + dispatch scroll & wheel events
-          // Attempt 2: Load More button click OR deep sentinel scrollIntoView + PageDown event
-          // Attempt 3: Deep scroll nudge (-500px then bottom) + re-scan
-          if (attempt === 1) {
-            if (!activeIsDoc && activeContainer) {
-              activeContainer.scrollTop = Math.max(0, activeContainer.scrollTop - 250);
-              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
-              activeContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: -250, bubbles: true }));
-            }
-            if (typeof window.scrollBy === "function") {
-              window.scrollBy({ top: -250, behavior: "instant" });
-              window.dispatchEvent(new Event("scroll", { bubbles: true }));
-              window.dispatchEvent(new WheelEvent("wheel", { deltaY: -250, bubbles: true }));
-            }
-            await new Promise(r => setTimeout(r, 200));
+        console.log("[WG_ACQ_PROGRESS]", {
+          actualProfiles: this.connections.size,
+          targetProfiles: targetCount,
+          newKeys: scanRes.newProfilesCount,
+          scrollTop: Math.round(currentScrollTop),
+          scrollHeight: Math.round(scrollHeight)
+        });
 
-            if (!activeIsDoc && activeContainer) {
-              activeContainer.scrollTop = activeContainer.scrollTop + 400;
-              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
-              activeContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: 400, bubbles: true }));
-            }
-            if (typeof window.scrollBy === "function") {
-              window.scrollBy({ top: 400, behavior: "instant" });
-              window.dispatchEvent(new Event("scroll", { bubbles: true }));
-              window.dispatchEvent(new WheelEvent("wheel", { deltaY: 400, bubbles: true }));
-            }
+        // 7. Check for new profile keys
+        if (scanRes.newProfilesCount > 0) {
+          consecutiveZeroProgressCount = 0;
+          this.lastProgressAt = Date.now();
+          this.isStalled = false;
+          await this.checkpointSession();
 
-            const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"], .artdeco-spinner') : null;
-            if (loader && typeof loader.scrollIntoView === "function") {
-              try { loader.scrollIntoView({ block: "end", behavior: "instant" }); } catch (_) {}
-            }
-          } else if (attempt === 2) {
-            const loadMoreBtn = this.findLoadMoreButton();
-            if (loadMoreBtn) {
-              try { loadMoreBtn.click(); } catch (_) {}
-            }
-            const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"], .artdeco-spinner') : null;
-            const anchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
-            const lastAnchor = anchors.length > 0 ? anchors[anchors.length - 1] : null;
-            const targetEl = loader || (lastAnchor ? (lastAnchor.closest('li, .mn-connection-card, [class*="card"]') || lastAnchor) : null);
-            if (targetEl && typeof targetEl.scrollIntoView === "function") {
-              try {
-                targetEl.scrollIntoView({ block: "center", behavior: "instant" });
-                await new Promise(r => setTimeout(r, 100));
-                targetEl.scrollIntoView({ block: "end", behavior: "instant" });
-              } catch (_) {}
-            }
-            try {
-              window.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }));
-              window.dispatchEvent(new WheelEvent("wheel", { deltaY: 600, bubbles: true }));
-            } catch (_) {}
-          } else if (attempt === 3) {
-            if (!activeIsDoc && activeContainer) {
-              activeContainer.scrollTop = Math.max(0, activeContainer.scrollTop - 500);
-              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
-              activeContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: -500, bubbles: true }));
-            }
-            if (typeof window.scrollBy === "function") {
-              window.scrollBy({ top: -500, behavior: "instant" });
-              window.dispatchEvent(new Event("scroll", { bubbles: true }));
-              window.dispatchEvent(new WheelEvent("wheel", { deltaY: -500, bubbles: true }));
-            }
-            await new Promise(r => setTimeout(r, 200));
+          // Check if target reached
+          if (targetCount > 0 && this.connections.size >= targetCount) {
+            await this.finishSessionAsComplete();
+            break;
+          }
+        } else {
+          // No new profiles in this batch — assess stall reason and initiate controlled render recovery
+          const clientHeight = container ? container.clientHeight : (window.innerHeight || 800);
+          const visibleKeys = Array.from(this.getVisibleProfileKeys());
 
-            const maxScroll = activeIsDoc
-              ? (document.documentElement ? document.documentElement.scrollHeight : 10000)
-              : (activeContainer ? activeContainer.scrollHeight : 10000);
-            if (!activeIsDoc && activeContainer) {
-              activeContainer.scrollTop = maxScroll;
-              activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
-            }
-            if (typeof window.scrollTo === "function") {
-              window.scrollTo({ top: maxScroll, behavior: "instant" });
-              window.dispatchEvent(new Event("scroll", { bubbles: true }));
-            }
+          let stallReason = "rendering_lag";
+          if (traversal.moved === false) {
+            stallReason = "scrolling_stuck";
+          } else if (targetCount > 0 && this.connections.size >= targetCount) {
+            stallReason = "target_reached";
+          } else if (traversal.isAtBottom && !this.findLoadMoreButton()) {
+            stallReason = "at_bottom";
           }
 
-          const waitTime = attempt === 1 ? 1500 : 2000;
-          await new Promise(r => setTimeout(r, waitTime));
-
-          const recScan = this.scanCurrentPageForUnseen();
-          const newKeysAfter = recScan.newProfilesCount;
-          const newScrollTop = activeIsDoc
-            ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
-            : (activeContainer ? activeContainer.scrollTop : 0);
-
-          const recovered = (recScan.newProfilesCount > 0);
-
-          console.log("[WG_ACQ_RECOVERY]", {
-            attempt,
-            previousScrollTop: Math.round(prevScrollTop),
-            newScrollTop: Math.round(newScrollTop),
-            newKeysBefore,
-            newKeysAfter,
+          console.log("[WG_RENDER_WAIT]", {
+            extracted: this.connections.size,
+            target: targetCount,
+            scrollTop: currentScrollTop,
+            scrollHeight,
+            clientHeight,
+            visibleKeys: visibleKeys.length,
             reason: stallReason
           });
 
-          if (recovered) {
-            recoveryProgressMade = true;
-            this.setPhase("ACQUIRING_CONNECTIONS", "acquiring", "Resuming extraction...");
-            consecutiveZeroProgressCount = 0;
-            await this.checkpointSession();
-            break;
+          // Stall detection threshold: if no new profile progress for >30s or consecutive zero progress
+          const timeSinceProgress = Date.now() - (this.lastProgressAt || Date.now());
+          if (consecutiveZeroProgressCount >= 1 || timeSinceProgress > 30000) {
+            this.isStalled = true;
           }
-        }
 
-        if (recoveryProgressMade) {
+          this.setPhase("WAITING_FOR_LINKEDIN_RENDER", "waiting_for_render", "Waiting for LinkedIn to load more connections...");
+          await this.checkpointSession();
+
+          let recoveryProgressMade = false;
+
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            if (this.shouldCancel || !isConnectionsPage()) break;
+
+            this.setPhase("RECOVERING_RENDER", "retrying", `Recovering LinkedIn list rendering (attempt ${attempt})...`);
+
+            const activeContainer = this.resolveScrollContainer();
+            const activeIsDoc = (activeContainer === document.body || activeContainer === document.documentElement || activeContainer === document.scrollingElement);
+            const prevScrollTop = activeIsDoc
+              ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
+              : (activeContainer ? activeContainer.scrollTop : 0);
+            const newKeysBefore = this.scanCurrentPageForUnseen().newProfilesCount;
+
+            // Controlled recovery per attempt:
+            // Attempt 1: Scroll nudge (-250px then +400px into loader/sentinel) + dispatch scroll & wheel events
+            // Attempt 2: Load More button click OR deep sentinel scrollIntoView + PageDown event
+            // Attempt 3: Deep scroll nudge (-500px then bottom) + re-scan
+            if (attempt === 1) {
+              if (!activeIsDoc && activeContainer) {
+                activeContainer.scrollTop = Math.max(0, activeContainer.scrollTop - 250);
+                activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
+                activeContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: -250, bubbles: true }));
+              }
+              if (typeof window.scrollBy === "function") {
+                window.scrollBy({ top: -250, behavior: "instant" });
+                window.dispatchEvent(new Event("scroll", { bubbles: true }));
+                window.dispatchEvent(new WheelEvent("wheel", { deltaY: -250, bubbles: true }));
+              }
+              await new Promise(r => setTimeout(r, 200));
+
+              if (!activeIsDoc && activeContainer) {
+                activeContainer.scrollTop = activeContainer.scrollTop + 400;
+                activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
+                activeContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: 400, bubbles: true }));
+              }
+              if (typeof window.scrollBy === "function") {
+                window.scrollBy({ top: 400, behavior: "instant" });
+                window.dispatchEvent(new Event("scroll", { bubbles: true }));
+                window.dispatchEvent(new WheelEvent("wheel", { deltaY: 400, bubbles: true }));
+              }
+
+              const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"], .artdeco-spinner') : null;
+              if (loader && typeof loader.scrollIntoView === "function") {
+                try { loader.scrollIntoView({ block: "end", behavior: "instant" }); } catch (_) {}
+              }
+            } else if (attempt === 2) {
+              const loadMoreBtn = this.findLoadMoreButton();
+              if (loadMoreBtn) {
+                try { loadMoreBtn.click(); } catch (_) {}
+              }
+              const loader = document.querySelector ? document.querySelector('.scaffold-finite-scroll__loader, #infiniteLoader, [class*="loader"], .artdeco-spinner') : null;
+              const anchors = document.querySelectorAll ? document.querySelectorAll('a[href*="/in/"]') : [];
+              const lastAnchor = anchors.length > 0 ? anchors[anchors.length - 1] : null;
+              const targetEl = loader || (lastAnchor ? (lastAnchor.closest('li, .mn-connection-card, [class*="card"]') || lastAnchor) : null);
+              if (targetEl && typeof targetEl.scrollIntoView === "function") {
+                try {
+                  targetEl.scrollIntoView({ block: "center", behavior: "instant" });
+                  await new Promise(r => setTimeout(r, 100));
+                  targetEl.scrollIntoView({ block: "end", behavior: "instant" });
+                } catch (_) {}
+              }
+              try {
+                window.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }));
+                window.dispatchEvent(new WheelEvent("wheel", { deltaY: 600, bubbles: true }));
+              } catch (_) {}
+            } else if (attempt === 3) {
+              if (!activeIsDoc && activeContainer) {
+                activeContainer.scrollTop = Math.max(0, activeContainer.scrollTop - 500);
+                activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
+                activeContainer.dispatchEvent(new WheelEvent("wheel", { deltaY: -500, bubbles: true }));
+              }
+              if (typeof window.scrollBy === "function") {
+                window.scrollBy({ top: -500, behavior: "instant" });
+                window.dispatchEvent(new Event("scroll", { bubbles: true }));
+                window.dispatchEvent(new WheelEvent("wheel", { deltaY: -500, bubbles: true }));
+              }
+              await new Promise(r => setTimeout(r, 200));
+
+              const maxScroll = activeIsDoc
+                ? (document.documentElement ? document.documentElement.scrollHeight : 10000)
+                : (activeContainer ? activeContainer.scrollHeight : 10000);
+              if (!activeIsDoc && activeContainer) {
+                activeContainer.scrollTop = maxScroll;
+                activeContainer.dispatchEvent(new Event("scroll", { bubbles: true }));
+              }
+              if (typeof window.scrollTo === "function") {
+                window.scrollTo({ top: maxScroll, behavior: "instant" });
+                window.dispatchEvent(new Event("scroll", { bubbles: true }));
+              }
+            }
+
+            const waitTime = attempt === 1 ? 1500 : 2000;
+            await new Promise(r => setTimeout(r, waitTime));
+
+            const recScan = this.scanCurrentPageForUnseen();
+            const newKeysAfter = recScan.newProfilesCount;
+            const newScrollTop = activeIsDoc
+              ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
+              : (activeContainer ? activeContainer.scrollTop : 0);
+
+            const recovered = (recScan.newProfilesCount > 0);
+
+            console.log("[WG_ACQ_RECOVERY]", {
+              attempt,
+              previousScrollTop: Math.round(prevScrollTop),
+              newScrollTop: Math.round(newScrollTop),
+              newKeysBefore,
+              newKeysAfter,
+              reason: stallReason
+            });
+
+            if (recovered) {
+              recoveryProgressMade = true;
+              this.setPhase("ACQUIRING_CONNECTIONS", "acquiring", "Resuming extraction...");
+              consecutiveZeroProgressCount = 0;
+              this.lastProgressAt = Date.now();
+              this.isStalled = false;
+              await this.checkpointSession();
+              break;
+            }
+          }
+
+          if (recoveryProgressMade) {
+            if (targetCount > 0 && this.connections.size >= targetCount) {
+              await this.finishSessionAsComplete();
+              break;
+            }
+            continue;
+          }
+
+          // Bounded recovery completed without new keys — increment zero progress count
+          consecutiveZeroProgressCount++;
+
           if (targetCount > 0 && this.connections.size >= targetCount) {
             await this.finishSessionAsComplete();
             break;
           }
-          continue;
-        }
 
-        // Bounded recovery completed without new keys — increment zero progress count
-        consecutiveZeroProgressCount++;
-
-        if (targetCount > 0 && this.connections.size >= targetCount) {
-          await this.finishSessionAsComplete();
-          break;
-        }
-
-        if (consecutiveZeroProgressCount >= MAX_ZERO_PROGRESS) {
-          if (targetCount > 0 && this.connections.size >= targetCount) {
-            await this.finishSessionAsComplete();
-          } else {
-            this.setPhase("PAUSED", "paused", "Extraction paused. Scroll page to render remaining connections.");
-            await this.checkpointSession();
+          if (consecutiveZeroProgressCount >= MAX_ZERO_PROGRESS) {
+            if (targetCount > 0 && this.connections.size >= targetCount) {
+              await this.finishSessionAsComplete();
+            } else {
+              this.isStalled = true;
+              this.setPhase("PAUSED", "stalled", "Acquisition paused: LinkedIn list stopped rendering. Return to tab or scroll to resume.");
+              await this.checkpointSession();
+            }
+            break;
           }
-          break;
         }
       }
-    }
 
-    if (this.shouldCancel) {
-      this.setPhase("PAUSED", "paused", "Acquisition stopped. Progress saved.");
-      await this.checkpointSession();
+      if (this.shouldCancel) {
+        this.setPhase("PAUSED", "paused", "Acquisition stopped. Progress saved.");
+        await this.checkpointSession();
+      }
+    } catch (err) {
+      console.error("[WG_ACQ_LOOP_ERROR] Error in acquisition loop:", err);
+      this.lastError = (err && err.message) ? err.message : String(err);
+      if (this.state !== "completed" && this.state !== "resting") {
+        this.setPhase("PAUSED", "paused", "Acquisition interrupted. Progress saved.");
+        try {
+          await this.checkpointSessionAsync();
+        } catch (_) {}
+      }
+    } finally {
+      if (typeof window !== "undefined") {
+        window.__warmgraphAcquisitionRunning = false;
+      }
+      this.isRunning = false;
+      this.activeLoopPromise = null;
+      this.nextBatchResolver = null;
+      if (this.visibilityResumeTimer) {
+        clearTimeout(this.visibilityResumeTimer);
+        this.visibilityResumeTimer = null;
+      }
     }
-
-    if (typeof window !== "undefined") {
-      window.__warmgraphAcquisitionRunning = false;
-    }
-    this.isRunning = false;
-    this.activeLoopPromise = null;
-    this.nextBatchResolver = null;
   }
 
   async reconcileNetworkWithDom(forceCheck = false) {
@@ -2819,7 +2885,7 @@ class ConnectionAcquisitionSession {
     // CASE A — Same Header Count & Previous Sync Complete (Skip Sync)
     if (storedTotal > 0 && liveTotal === storedTotal && isPreviousComplete && !forceCheck) {
       this.totalConnections = liveTotal;
-      this.actualProfiles = storedActual || extractedCount;
+      this.actualProfiles = storedActual || (liveTotal > 1 ? liveTotal - 1 : 0);
       this.expectedTotal = liveTotal;
       this.state = "resting";
       this.syncStatus = "synced";
@@ -2879,11 +2945,19 @@ class ConnectionAcquisitionSession {
   waitForNextBatch(nextBatchAt) {
     return new Promise((resolve) => {
       let resolved = false;
+      let intervalId = null;
+      let timeoutId = null;
+
       const finish = () => {
         if (!resolved) {
           resolved = true;
           this.nextBatchResolver = null;
           if (intervalId) clearInterval(intervalId);
+          if (timeoutId) clearTimeout(timeoutId);
+          if (this.visibilityResumeTimer) {
+            clearTimeout(this.visibilityResumeTimer);
+            this.visibilityResumeTimer = null;
+          }
           resolve();
         }
       };
@@ -2896,7 +2970,7 @@ class ConnectionAcquisitionSession {
         return;
       }
 
-      const intervalId = setInterval(() => {
+      intervalId = setInterval(() => {
         if (!isConnectionsPage() || this.shouldCancel) {
           finish();
           return;
@@ -2914,8 +2988,50 @@ class ConnectionAcquisitionSession {
         }
       }, 500);
 
-      setTimeout(finish, remaining + 100);
+      timeoutId = setTimeout(finish, remaining + 50);
     });
+  }
+
+  handleVisibilityResume() {
+    this.isTabHidden = false;
+    if (!isConnectionsPage()) return;
+
+    const extractedCount = this.connections ? this.connections.size : 0;
+    const targetCount = this.getTargetProfiles();
+    const isCompleted = (this.state === "completed" || this.state === "resting") || (targetCount > 0 && extractedCount >= targetCount);
+    if (isCompleted) return;
+
+    if (!window.__warmgraphAcquisitionRunning && !this.isRunning && !this.activeLoopPromise) {
+      console.log("[WG_RESUME] Tab visible, restarting non-running acquisition session");
+      this.start();
+      return;
+    }
+
+    if (this.nextBatchResolver && this.nextBatchAt) {
+      const now = Date.now();
+      const remainingMs = this.nextBatchAt - now;
+      if (remainingMs <= 0) {
+        console.log("[WG_RESUME] Tab visible and inter-batch delay elapsed, resolving next batch wait immediately");
+        this.nextBatchResolver();
+      } else {
+        console.log(`[WG_RESUME] Tab visible, preserving remaining ${remainingMs}ms inter-batch delay in foreground`);
+        if (this.visibilityResumeTimer) {
+          clearTimeout(this.visibilityResumeTimer);
+        }
+        const remSec = Math.ceil(remainingMs / 1000);
+        this.countdownSeconds = remSec;
+        this.statusMessage = `Next batch in ${remSec}s`;
+        if (typeof window !== "undefined" && typeof window.updateWarmGraphOverlay === "function") {
+          window.updateWarmGraphOverlay(this.getStatus());
+        }
+        this.visibilityResumeTimer = setTimeout(() => {
+          this.visibilityResumeTimer = null;
+          if (this.nextBatchResolver) {
+            this.nextBatchResolver();
+          }
+        }, remainingMs + 20);
+      }
+    }
   }
 
   start(stateName = "acquiring") {
@@ -2946,7 +3062,17 @@ class ConnectionAcquisitionSession {
     this.lockedPath = CONNECTIONS_LOCKED_PATH;
     this.shouldCancel = false;
     this.state = stateName;
-    this.activeLoopPromise = this.runAcquisitionLoop();
+    const loopPromise = this.runAcquisitionLoop();
+    this.activeLoopPromise = loopPromise;
+    if (loopPromise && typeof loopPromise.catch === "function") {
+      loopPromise.catch((err) => {
+        console.error("[WG_ACQ_PROMISE_REJECTION]", err);
+      }).finally(() => {
+        if (this.activeLoopPromise === loopPromise) {
+          this.activeLoopPromise = null;
+        }
+      });
+    }
     this.checkpointSessionSync();
     return this.getStatus();
   }
@@ -2964,19 +3090,20 @@ class ConnectionAcquisitionSession {
 
   getStatus() {
     const collected = this.connections.size;
-    const expected = this.expectedTotal || Math.max(collected, 1);
-    const rawActual = this.actualProfiles !== undefined ? this.actualProfiles : (expected > 1 ? expected - 1 : (expected || collected || 1));
-    const isCompletedOrResting = (this.state === "completed" || this.state === "resting" || this.completionStatus === "complete") && (rawActual > 0 && collected >= rawActual);
+    const rawTotal = this.totalConnections || this.expectedTotal || 0;
+    const expected = rawTotal;
+    const rawActual = this.getTargetProfiles();
     const actual = rawActual;
-    const remaining = Math.max(0, actual - collected);
-    const progressPct = actual > 0 ? (collected >= actual ? 100 : Math.min(99, Math.floor((collected / actual) * 100))) : (collected > 0 ? 100 : 0);
+    const isCompletedOrResting = (this.state === "completed" || this.state === "resting" || this.completionStatus === "complete") && (actual > 0 && collected >= actual);
+    const remaining = actual > 0 ? Math.max(0, actual - collected) : 0;
+    const progressPct = actual > 0 ? (collected >= actual ? 100 : Math.min(99, Math.floor((collected / actual) * 100))) : 0;
     const imported = this.importedRecords;
     const activeFilterObj = this.activeFilter || extractActiveFilterFromDom();
     const now = Date.now();
     const isPaused = this.phase === "PAUSED" || this.state === "paused" || this.state === "interrupted" || !isConnectionsPage();
     const derivedCountdown = isPaused
-      ? (this.pausedRemainingMs ? Math.ceil(this.pausedRemainingMs / 1000) : (this.countdownSeconds || 0))
-      : ((this.nextBatchAt && this.nextBatchAt > now) ? Math.max(0, Math.ceil((this.nextBatchAt - now) / 1000)) : (this.countdownSeconds || 0));
+      ? (this.pausedRemainingMs ? Math.ceil(this.pausedRemainingMs / 1000) : 0)
+      : ((this.nextBatchAt && this.nextBatchAt > now) ? Math.max(0, Math.ceil((this.nextBatchAt - now) / 1000)) : 0);
 
     return {
       sessionId: this.sessionId,
@@ -3015,6 +3142,9 @@ class ConnectionAcquisitionSession {
       sync_status: this.syncStatus,
       sync_message: this.syncMessage,
       last_synced_at: this.lastSyncTimestamp || null,
+      lastProgressAt: this.lastProgressAt || null,
+      isStalled: Boolean(this.isStalled),
+      isRetrying: Boolean(this.phase === "RECOVERING_RENDER" || this.state === "retrying"),
       telemetry: this.lastTelemetry || null,
       container_diagnostics: inspectLiveScrollContainers(),
       connections: Array.from(this.connections.values()),
@@ -3265,7 +3395,7 @@ async function ensureConnectionsAcquisition() {
 
     // 3. Reconcile restored session against live LinkedIn DOM header
     const linkedinDisplayedTotal = extractTotalConnectionsFromDom();
-    const restoredTargetProfiles = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
+    const restoredTargetProfiles = acquisitionSession.getTargetProfiles();
     const restoredConnectionCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
     const restoredCompletionStatus = acquisitionSession.completionStatus || "incomplete";
     const restoredAutoSyncCompleted = !!acquisitionSession.autoSyncCompleted;
@@ -3422,28 +3552,7 @@ if (typeof window !== "undefined") {
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
         if (acquisitionSession) {
-          acquisitionSession.isTabHidden = false;
-          if (isConnectionsPage()) {
-            const extractedCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
-            const targetCount = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
-            if (targetCount === 0 || extractedCount < targetCount) {
-              if (!window.__warmgraphAcquisitionRunning) {
-                const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
-                console.log("[WG_START_CALLER]", {
-                  instanceId: instId,
-                  caller: "visibilitychange",
-                  url: typeof window !== "undefined" ? window.location.href : "",
-                  isConnectionsPage: isConnectionsPage(),
-                  stack: new Error().stack
-                });
-                acquisitionSession.start();
-              } else if (acquisitionSession.nextBatchAt && Date.now() >= acquisitionSession.nextBatchAt) {
-                if (acquisitionSession.nextBatchResolver) {
-                  acquisitionSession.nextBatchResolver();
-                }
-              }
-            }
-          }
+          acquisitionSession.handleVisibilityResume();
         }
       } else {
         if (acquisitionSession) {
@@ -3520,7 +3629,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             acquisitionSession.nextBatchResolver();
           } else if (!window.__warmgraphAcquisitionRunning) {
             const extractedCount = acquisitionSession.connections ? acquisitionSession.connections.size : 0;
-            const targetCount = acquisitionSession.actualProfiles || acquisitionSession.expectedTotal || 0;
+            const targetCount = acquisitionSession.getTargetProfiles();
             if (targetCount === 0 || extractedCount < targetCount) {
               const instId = typeof window !== "undefined" ? window.__warmgraphInstanceId : "unknown";
               console.log("[WG_START_CALLER]", {

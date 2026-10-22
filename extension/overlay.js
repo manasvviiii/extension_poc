@@ -490,7 +490,9 @@
 
     const state = status.state || "idle";
     const collected = status.extractedConnections !== undefined ? status.extractedConnections : (status.collected_count !== undefined ? status.collected_count : (status.connections ? status.connections.length : 0));
-    const actual = status.actualProfiles !== undefined ? status.actualProfiles : (status.expected_total !== undefined ? status.expected_total : 0);
+    const actual = (status.actualProfiles !== undefined && status.actualProfiles !== null && status.actualProfiles > 0)
+      ? status.actualProfiles
+      : (status.totalConnections > 1 ? status.totalConnections - 1 : (status.expected_total > 1 ? status.expected_total - 1 : 0));
     const isComplete = actual > 0 && collected >= actual;
     const syncStatus = status.sync_status || status.syncStatus || "idle";
     const isError = state === "failed" || state === "error" || (status.error && status.error.length > 0);
@@ -516,7 +518,76 @@
       return pausedStateData;
     }
 
+    if (status.isStalled && !["completed", "resting"].includes(state)) {
+      return {
+        stateKey: "stalled",
+        badgeText: "Stalled",
+        badgeClass: "warmgraph-status-paused",
+        title: "Acquisition Stalled",
+        desc: status.status_message || "LinkedIn connection list stopped responding. Return to tab or scroll to resume.",
+        activities: [
+          { icon: "✓", text: "Progress saved locally", status: "done" },
+          { icon: "⚠️", text: "Stalled waiting for LinkedIn", status: "active" }
+        ],
+        showReassurance: true,
+        reassuranceText: "Progress safely saved",
+        showCta: true,
+        ctaText: "Resume Acquisition",
+        syncBadgeText: { text: "Stalled — click Resume", type: "pending" }
+      };
+    }
+
+    if (status.isRetrying && !["completed", "resting"].includes(state)) {
+      return {
+        stateKey: "retrying",
+        badgeText: "Retrying",
+        badgeClass: "warmgraph-status-building",
+        title: "Recovering LinkedIn list...",
+        desc: status.status_message || "Attempting to recover rendering of your LinkedIn connections.",
+        activities: [
+          { icon: "✓", text: "Connections collected", status: "done" },
+          { icon: "🔄", text: "Recovering connection list", status: "active" }
+        ],
+        showReassurance: true,
+        showCta: false,
+        syncBadgeText: null
+      };
+    }
+
     switch (state) {
+      case "stalled":
+        return {
+          stateKey: "stalled",
+          badgeText: "Stalled",
+          badgeClass: "warmgraph-status-paused",
+          title: "Acquisition Stalled",
+          desc: status.status_message || "LinkedIn connection list stopped responding. Return to tab or scroll to resume.",
+          activities: [
+            { icon: "✓", text: "Progress saved locally", status: "done" },
+            { icon: "⚠️", text: "Stalled waiting for LinkedIn", status: "active" }
+          ],
+          showReassurance: true,
+          reassuranceText: "Progress safely saved",
+          showCta: true,
+          ctaText: "Resume Acquisition",
+          syncBadgeText: { text: "Stalled — click Resume", type: "pending" }
+        };
+
+      case "retrying":
+        return {
+          stateKey: "retrying",
+          badgeText: "Retrying",
+          badgeClass: "warmgraph-status-building",
+          title: "Recovering LinkedIn list...",
+          desc: status.status_message || "Attempting to recover rendering of your LinkedIn connections.",
+          activities: [
+            { icon: "✓", text: "Connections collected", status: "done" },
+            { icon: "🔄", text: "Recovering connection list", status: "active" }
+          ],
+          showReassurance: true,
+          showCta: false,
+          syncBadgeText: null
+        };
       case "preparing":
         return {
           stateKey: "preparing",
@@ -1024,11 +1095,13 @@
         : (status.collected_count !== undefined ? status.collected_count : 0);
 
       // Trust actualProfiles from content.js — NEVER re-derive from extracted
-      const actual = status.actualProfiles !== undefined && status.actualProfiles > 0
+      const actual = (status.actualProfiles !== undefined && status.actualProfiles !== null && status.actualProfiles > 0)
         ? status.actualProfiles
-        : (status.totalConnections !== undefined ? status.totalConnections : (status.expected_total || 0));
+        : (status.totalConnections > 1 ? status.totalConnections - 1 : (status.expected_total > 1 ? status.expected_total - 1 : 0));
 
-      const total = status.totalConnections !== undefined ? status.totalConnections : (status.expected_total || actual);
+      const total = status.totalConnections !== undefined && status.totalConnections > 0
+        ? status.totalConnections
+        : (status.expected_total > 0 ? status.expected_total : (actual > 0 ? actual + 1 : 0));
 
       // Trust progressPercent from content.js; only fallback-compute if absent
       const progressPercent = status.progressPercent !== undefined
@@ -1283,15 +1356,16 @@
       const activityListEl = this.container.querySelector("#warmgraph-activity-list");
 
       const state = this.currentStatus.state || "idle";
+      if (state === "completed" || state === "resting" || state === "paused" || state === "stalled" || this.currentStatus.isStalled) return;
+
       const expected = this.currentStatus.totalConnections !== undefined ? this.currentStatus.totalConnections : (this.currentStatus.expected_total || 0);
       const collected = this.currentStatus.extractedConnections !== undefined ? this.currentStatus.extractedConnections : (this.currentStatus.collected_count || 0);
       const remaining = this.currentStatus.remainingConnections !== undefined ? this.currentStatus.remainingConnections : Math.max(0, expected - collected);
       const nextBatchAt = this.currentStatus.nextBatchAt || (this.currentStatus.nextSyncAt ? new Date(this.currentStatus.nextSyncAt).getTime() : null);
 
-      if (state !== "completed" && remaining > 0 && (this.currentStatus.countdown_seconds > 0 || nextBatchAt)) {
-        const remainingSec = this.currentStatus.countdown_seconds > 0
-          ? this.currentStatus.countdown_seconds
-          : Math.max(0, Math.ceil((nextBatchAt - Date.now()) / 1000));
+      if (remaining > 0 && nextBatchAt) {
+        const diffMs = nextBatchAt - Date.now();
+        const remainingSec = Math.ceil(diffMs / 1000);
 
         if (remainingSec > 0) {
           if (reassuranceEl) {
@@ -1313,6 +1387,11 @@
                 <span>${act.text}</span>
               </div>
             `).join("");
+          }
+        } else if (diffMs < -2000) {
+          // Deadline elapsed: do not show stale countdown as evidence of progress
+          if (reassuranceEl && reassuranceEl.textContent.includes("Next sync in")) {
+            reassuranceEl.textContent = `${remaining} remaining • Loading connections...`;
           }
         }
       }
